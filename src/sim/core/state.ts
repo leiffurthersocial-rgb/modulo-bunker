@@ -4,43 +4,69 @@
  */
 import type { ItemId, RoomTypeId } from '../../data/types';
 
-export const SAVE_SCHEMA_VERSION = 1;
+export const SAVE_SCHEMA_VERSION = 2;
 
-/** Geometry constants (metres). World: x = along floor (left/right of shaft), y = up, z = depth. */
+/** Geometry constants (metres). World: x/z horizontal (cell grid), y up. Level 0 = top level. */
 export const GEO = {
-  shaftWidth: 4,
-  cellWidth: 6,
+  /** Cell footprint (x and z). */
+  cell: 6,
+  /** Clear interior height of one level. */
   cellHeight: 3.5,
-  cellDepth: 8,
   slab: 0.5,
-  /** Vertical distance between floor surfaces. */
-  floorPitch: 4,
-  cellsPerSide: 4,
-  /** Door centre z (doors along the back of each cell, near the shaft landing). */
-  doorZ: -2,
+  /** Vertical distance between level floor surfaces. */
+  levelPitch: 4,
   doorWidth: 2,
   doorHeight: 2.3,
 } as const;
 
-export type Side = -1 | 1;
-export type SlotState = 'rock' | 'empty' | 'sealed' | 'room';
-export type SealKind = 'power' | 'repair' | 'keycard';
+export type CellKind = 'room' | 'corridor' | 'shaft';
+export type SealKind = 'power' | 'repair' | 'keycard' | 'thaw';
 
-export interface Slot {
+/** One grid cell. Cells only exist where the bunker is; everything else is rock. */
+export interface Cell {
   id: number;
-  floor: number;
-  side: Side;
-  /** 0 = next to the shaft .. 3 = outermost. */
-  index: number;
-  state: SlotState;
+  x: number;
+  /** Level index: 0 = top, increasing downward. */
+  y: number;
+  z: number;
+  kind: CellKind;
   roomId: number | null;
-  /** For sealed slots: how to open, and what is behind. */
-  seal?: {
-    kind: SealKind;
-    cost: { item: ItemId; qty: number }[];
-    hiddenRoom?: RoomTypeId;
-    loot?: { item: ItemId; qty: number }[];
-  };
+  shaftId: number | null;
+  sectionId: number;
+}
+
+/** A doorway / opening between two horizontally adjacent cells (or a hatch between levels). */
+export interface Link {
+  id: number;
+  a: number;
+  b: number;
+  kind: 'door' | 'bulkhead';
+  /** Bulkheads start sealed and gate whole sections. */
+  sealed: boolean;
+  seal?: { kind: SealKind; cost: { item: ItemId; qty: number }[]; label: string };
+}
+
+/** Vertical connector: elevator (one car) or ladder. Occupies a column of shaft cells. */
+export interface Shaft {
+  id: number;
+  kind: 'elevator' | 'ladder';
+  x: number;
+  z: number;
+  top: number;
+  bottom: number;
+  /** Broken shafts cannot be used until repaired. */
+  broken: boolean;
+  repairCost: { item: ItemId; qty: number }[];
+}
+
+export interface Section {
+  id: number;
+  template: string;
+  name: string;
+  /** True once the section's bulkhead is open (or for the starting core). */
+  open: boolean;
+  /** Flavour state while sealed: what is wrong in there. */
+  condition: 'ok' | 'frozen' | 'dark' | 'collapsed' | 'sealed';
 }
 
 export interface Room {
@@ -48,8 +74,9 @@ export interface Room {
   type: RoomTypeId;
   /** 1..3 */
   tier: number;
-  /** Slot ids, ordered from shaft outward. */
-  slotIds: number[];
+  /** Cell ids (any 3D shape). */
+  cellIds: number[];
+  sectionId: number;
   /** Damaged rooms do nothing until repaired. */
   damaged: boolean;
   /** Player toggle. */
@@ -66,12 +93,6 @@ export interface Room {
   workers: number[];
 }
 
-export type FloorState = 'open' | 'sealed' | 'unexcavated';
-export interface Floor {
-  index: number;
-  state: FloorState;
-}
-
 export interface Survivor {
   id: number;
   templateId: string;
@@ -83,8 +104,8 @@ export interface Survivor {
   needs: Record<string, number>;
   health: number;
   stress: number;
-  /** Position: floor + continuous x/z within the floor. When riding the elevator, floor = car floor. */
-  floor: number;
+  /** Position: level + continuous world x/z. While riding an elevator, level follows the car. */
+  level: number;
   x: number;
   z: number;
   /** Facing angle (radians, render only), computed from movement with exact math. */
@@ -94,14 +115,26 @@ export interface Survivor {
   action: string;
   actionTarget: number | null;
   actionSince: number;
-  /** Remaining waypoint path (world x,z with floor). */
-  path: { floor: number; x: number; z: number; via?: 'elevator' }[];
+  /** Remaining waypoint path. `via` marks a vertical move (elevator ride or ladder climb). */
+  path: Waypoint[];
   /** Elevator state for this survivor. */
   elevator: 'none' | 'waiting' | 'riding';
+  /** Shaft id of the elevator being waited for / ridden. */
+  elevatorId: number | null;
+  /** Fractional level while climbing a ladder. */
+  climb?: number;
+}
+
+export interface Waypoint {
+  level: number;
+  x: number;
+  z: number;
+  via?: { kind: 'elevator' | 'ladder'; shaftId: number };
 }
 
 export interface Elevator {
-  /** Car floor position (continuous; floor index units). */
+  shaftId: number;
+  /** Car position (continuous; level units). */
   pos: number;
   target: number | null;
   /** Pending floor requests (FIFO, unique). */
@@ -123,7 +156,8 @@ export interface MachineState {
   id: number;
   type: string;
   roomId: number;
-  /** Local grid position inside the room (metres from room's shaft-side/back corner). */
+  /** Cell the machine stands in, and its 1 m grid position inside that cell. */
+  cellId: number;
   gx: number;
   gz: number;
   /** 0..3 rotation (90° steps). */
@@ -144,8 +178,8 @@ export interface MachineState {
  */
 export interface Lane {
   id: number;
-  /** Polyline in world space (floor-local x/z), all on one floor for Phase 1. */
-  floor: number;
+  /** Polyline in world x/z, all on one level for Phase 1. */
+  level: number;
   points: { x: number; z: number }[];
   /** Total length in fixed-point units. */
   length: number;
@@ -168,7 +202,7 @@ export interface PipeNetwork {
   volume: number;
   capacity: number;
   /** Segments for rendering, floor-local. */
-  segments: { floor: number; x1: number; z1: number; x2: number; z2: number }[];
+  segments: { level: number; x1: number; z1: number; x2: number; z2: number }[];
   /** Machine ports that push into / pull from this network. */
   producers: { machineId: number }[];
   consumers: { machineId: number }[];
@@ -181,11 +215,13 @@ export interface SimState {
   seed: string;
   tick: number;
   nextId: number;
-  floors: Floor[];
-  slots: Slot[];
+  cells: Cell[];
+  links: Link[];
+  shafts: Shaft[];
+  sections: Section[];
   rooms: Room[];
   survivors: Survivor[];
-  elevator: Elevator;
+  elevators: Elevator[];
   store: Record<ItemId, number>;
   power: PowerState;
   /** Bunker-wide CO2 (ppm). */

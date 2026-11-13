@@ -30,7 +30,7 @@
         "effects": [
           {
             "type": "power",
-            "kw": 52
+            "kw": 15
           }
         ]
       },
@@ -52,7 +52,7 @@
         "effects": [
           {
             "type": "power",
-            "kw": 75
+            "kw": 22
           }
         ]
       },
@@ -74,7 +74,7 @@
         "effects": [
           {
             "type": "power",
-            "kw": 105
+            "kw": 30
           }
         ]
       }
@@ -1321,6 +1321,44 @@
             "perHour": 26
           }
         ]
+      }
+    ]
+  },
+  {
+    "id": "empty",
+    "name": "Empty bay",
+    "short": "BAY",
+    "color": "#5c6670",
+    "category": "special",
+    "maxWidth": 3,
+    "buildable": false,
+    "priority": 4,
+    "mergeBonus": [1, 2, 3],
+    "description": "Stripped bare. Refit it into something useful.",
+    "tiers": [
+      {
+        "cost": [],
+        "powerDraw": 0,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 1,
+        "effects": []
+      },
+      {
+        "cost": [],
+        "powerDraw": 0,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 1,
+        "effects": []
+      },
+      {
+        "cost": [],
+        "powerDraw": 0,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 1,
+        "effects": []
       }
     ]
   }

@@ -2,7 +2,7 @@ import { applyCommand } from './commands';
 import type { Command } from './commands';
 import type { World } from './world';
 import { stepHeat, stepPower, stepProduction, stepSpoilage } from '../systems/rooms';
-import { stepElevator, stepSurvivors } from '../systems/survivors';
+import { stepElevators, stepSurvivors } from '../systems/survivors';
 import { stepLogistics } from '../systems/logistics';
 
 /**
@@ -16,7 +16,7 @@ export function step(w: World, commands: readonly Command[] = []): void {
   stepHeat(w);
   stepLogistics(w);
   stepSurvivors(w);
-  stepElevator(w);
+  stepElevators(w);
   stepSpoilage(w);
   w.state.tick++;
 }

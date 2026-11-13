@@ -306,7 +306,7 @@ export class Game {
     if (this.uiAcc < 0.25) return;
     this.uiAcc = 0;
     const st = this.world.state;
-    const temps = st.rooms.filter((r) => !r.damaged).map((r) => r.temp);
+    const temps = st.rooms.filter((r) => !r.damaged && w.roomOpen(r)).map((r) => r.temp);
     ui.set({
       resources: {
         clock: formatClock(st.tick),

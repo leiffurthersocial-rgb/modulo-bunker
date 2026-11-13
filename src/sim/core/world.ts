@@ -1,7 +1,8 @@
 import type { Defs } from '../../data/types';
 import { Rng } from '../../gen/rng';
 import type { SimEvent } from './events';
-import type { Room, SimState, Slot, Survivor } from './state';
+import type { Cell, Elevator, Link, Room, Shaft, SimState, Survivor } from './state';
+import { cellKey } from './geometry';
 
 /** RNG streams owned by the sim (generation streams live in gen/). */
 export const SIM_STREAMS = ['events', 'ai', 'mystery', 'misc'] as const;
@@ -15,7 +16,10 @@ export class World {
   readonly rng: Record<SimStream, Rng>;
   outbox: SimEvent[] = [];
   private roomIndex = new Map<number, Room>();
-  private slotIndex = new Map<number, Slot>();
+  private cellIndex = new Map<number, Cell>();
+  private cellAtIndex = new Map<string, Cell>();
+  private linksByCell = new Map<number, Link[]>();
+  private shaftIndex = new Map<number, Shaft>();
   private survivorIndex = new Map<number, Survivor>();
   private indexVersion = -1;
   /** Bumped whenever rooms/slots change shape; systems cache derived data against it. */
@@ -53,10 +57,24 @@ export class World {
 
   private reindex(): void {
     this.roomIndex.clear();
-    this.slotIndex.clear();
+    this.cellIndex.clear();
+    this.cellAtIndex.clear();
+    this.linksByCell.clear();
+    this.shaftIndex.clear();
     this.survivorIndex.clear();
     for (const r of this.state.rooms) this.roomIndex.set(r.id, r);
-    for (const s of this.state.slots) this.slotIndex.set(s.id, s);
+    for (const c of this.state.cells) {
+      this.cellIndex.set(c.id, c);
+      this.cellAtIndex.set(cellKey(c.x, c.y, c.z), c);
+    }
+    for (const l of this.state.links) {
+      for (const id of [l.a, l.b]) {
+        let arr = this.linksByCell.get(id);
+        if (!arr) this.linksByCell.set(id, (arr = []));
+        arr.push(l);
+      }
+    }
+    for (const s of this.state.shafts) this.shaftIndex.set(s.id, s);
     for (const s of this.state.survivors) this.survivorIndex.set(s.id, s);
     this.indexVersion = this.topology;
   }
@@ -69,17 +87,36 @@ export class World {
     this.ensureIndex();
     return this.roomIndex.get(id);
   }
-  slot(id: number): Slot | undefined {
+  cell(id: number | null | undefined): Cell | undefined {
+    if (id == null) return undefined;
     this.ensureIndex();
-    return this.slotIndex.get(id);
+    return this.cellIndex.get(id);
+  }
+  cellAt(x: number, y: number, z: number): Cell | undefined {
+    this.ensureIndex();
+    return this.cellAtIndex.get(cellKey(x, y, z));
+  }
+  linksOf(cellId: number): Link[] {
+    this.ensureIndex();
+    return this.linksByCell.get(cellId) ?? [];
+  }
+  shaft(id: number | null | undefined): Shaft | undefined {
+    if (id == null) return undefined;
+    this.ensureIndex();
+    return this.shaftIndex.get(id);
+  }
+  elevator(shaftId: number): Elevator | undefined {
+    return this.state.elevators.find((e) => e.shaftId === shaftId);
+  }
+  /** Is this cell inside an open (reachable) section? */
+  cellOpen(c: Cell): boolean {
+    return this.state.sections.find((s) => s.id === c.sectionId)?.open ?? false;
+  }
+  roomOpen(r: Room): boolean {
+    return this.state.sections.find((s) => s.id === r.sectionId)?.open ?? false;
   }
   survivor(id: number): Survivor | undefined {
     this.ensureIndex();
     return this.survivorIndex.get(id);
-  }
-  slotAt(floor: number, side: -1 | 1, index: number): Slot | undefined {
-    // Slots are generated in floor/side/index order: 8 per floor.
-    const s = this.state.slots[floor * 8 + (side === -1 ? 0 : 4) + index];
-    return s && s.floor === floor && s.side === side && s.index === index ? s : undefined;
   }
 }

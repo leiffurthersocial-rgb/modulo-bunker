@@ -17,61 +17,68 @@ describe('determinism', () => {
   });
 });
 
-describe('commands', () => {
-  it('build, upgrade, merge, demolish a room', () => {
+describe('commands on the pre-built bunker', () => {
+  it('repair, upgrade and refit rooms', () => {
     const w = newWorld(SEED);
-    w.state.store = { scrap: 150, parts: 60 };
-    const empties = w.state.slots.filter(
-      (s) => s.state === 'empty' && w.state.floors[s.floor]!.state === 'open',
-    );
-    // Find two adjacent empty cells.
-    const a = empties.find((s) =>
-      empties.some((t) => t.floor === s.floor && t.side === s.side && t.index === s.index + 1),
-    )!;
-    const b = empties.find((t) => t.floor === a.floor && t.side === a.side && t.index === a.index + 1)!;
-    expect(applyCommand(w, { type: 'build', slotId: a.id, roomType: 'common' }).ok).toBe(true);
-    expect(applyCommand(w, { type: 'build', slotId: b.id, roomType: 'common' }).ok).toBe(true);
-    const ra = w.room(a.roomId)!;
-    const rb = w.room(b.roomId)!;
-    expect(applyCommand(w, { type: 'upgrade', roomId: ra.id }).ok).toBe(true);
-    expect(applyCommand(w, { type: 'merge', roomId: ra.id, otherRoomId: rb.id })).toEqual({
-      ok: false,
-      reason: 'Upgrade both to the same tier first',
-    });
-    expect(applyCommand(w, { type: 'upgrade', roomId: rb.id }).ok).toBe(true);
-    expect(applyCommand(w, { type: 'merge', roomId: ra.id, otherRoomId: rb.id }).ok).toBe(true);
-    const merged = w.room(Math.min(ra.id, rb.id))!;
-    expect(merged.slotIds).toHaveLength(2);
-    expect(w.state.rooms.find((r) => r.id === Math.max(ra.id, rb.id))).toBeUndefined();
-    const scrapBefore = w.state.store.scrap!;
-    expect(applyCommand(w, { type: 'demolish', roomId: merged.id }).ok).toBe(true);
-    expect(w.state.store.scrap!).toBeGreaterThan(scrapBefore);
-    expect(w.slot(a.id)!.state).toBe('empty');
+    w.state.store = { scrap: 200, parts: 100 };
+    const bay = w.state.rooms.find((r) => r.type === 'empty')!;
+    expect(applyCommand(w, { type: 'upgrade', roomId: bay.id }).ok).toBe(false);
+    expect(applyCommand(w, { type: 'refit', roomId: bay.id, roomType: 'hydroponics' }).ok).toBe(true);
+    expect(bay.type).toBe('hydroponics');
+    expect(bay.tier).toBe(1);
+    expect(applyCommand(w, { type: 'upgrade', roomId: bay.id }).ok).toBe(true);
+    expect(bay.tier).toBe(2);
+    expect(applyCommand(w, { type: 'refit', roomId: bay.id, roomType: 'airlock' }).ok).toBe(false);
+    const broken = w.state.rooms.find((r) => r.damaged && w.roomOpen(r));
+    if (broken) {
+      expect(applyCommand(w, { type: 'upgrade', roomId: broken.id }).ok).toBe(false);
+      expect(applyCommand(w, { type: 'repair', roomId: broken.id }).ok).toBe(true);
+      expect(broken.damaged).toBe(false);
+    }
   });
 
-  it('rejects building on rock, sealed cells and without materials', () => {
+  it('rooms in sealed sections cannot be used; bulkheads open with their requirement', () => {
     const w = newWorld(SEED);
-    const rock = w.state.slots.find((s) => s.state === 'rock')!;
-    expect(applyCommand(w, { type: 'build', slotId: rock.id, roomType: 'common' }).ok).toBe(false);
-    const empty = w.state.slots.find(
-      (s) => s.state === 'empty' && w.state.floors[s.floor]!.state === 'open',
-    )!;
-    w.state.store.scrap = 0;
-    expect(applyCommand(w, { type: 'build', slotId: empty.id, roomType: 'common' })).toEqual({
+    const workshopSec = w.state.sections.find((s) => s.template === 'workshop')!;
+    const room = w.state.rooms.find((r) => r.sectionId === workshopSec.id)!;
+    expect(applyCommand(w, { type: 'repair', roomId: room.id })).toEqual({
       ok: false,
-      reason: 'Not enough materials',
+      reason: 'Section is sealed',
     });
-    expect(w.outbox.some((e) => e.type === 'command.rejected')).toBe(true);
+    const bulk = w.state.links.find(
+      (l) => l.sealed && [l.a, l.b].some((id) => w.cell(id)!.sectionId === workshopSec.id),
+    )!;
+    w.state.store = { scrap: 0, parts: 0 };
+    expect(applyCommand(w, { type: 'openBulkhead', linkId: bulk.id }).ok).toBe(false);
+    w.state.store = { scrap: 50, parts: 20 };
+    expect(applyCommand(w, { type: 'openBulkhead', linkId: bulk.id }).ok).toBe(true);
+    expect(workshopSec.open).toBe(true);
+    const hatch = w.state.links.find((l) => l.seal?.kind === 'keycard')!;
+    expect(applyCommand(w, { type: 'openBulkhead', linkId: hatch.id })).toEqual({
+      ok: false,
+      reason: 'Needs a keycard',
+    });
+  });
+
+  it('power-sealed bulkheads need spare power', () => {
+    const w = newWorld(SEED);
+    run(w, 5);
+    const deep = w.state.links.find((l) => l.seal?.label.startsWith('Deep'))!;
+    w.state.store = { scrap: 50, parts: 20 };
+    const r = applyCommand(w, { type: 'openBulkhead', linkId: deep.id });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/kW spare power/);
   });
 
   it('respects worker capacity', () => {
     const w = newWorld(SEED);
     const kitchen = w.state.rooms.find((r) => r.type === 'kitchen')!;
-    const [s1, s2] = w.state.survivors;
+    const [s1, s2, s3] = w.state.survivors;
     expect(applyCommand(w, { type: 'assign', survivorId: s1!.id, roomId: kitchen.id }).ok).toBe(true);
-    expect(applyCommand(w, { type: 'assign', survivorId: s2!.id, roomId: kitchen.id }).ok).toBe(false);
+    expect(applyCommand(w, { type: 'assign', survivorId: s2!.id, roomId: kitchen.id }).ok).toBe(true);
+    expect(applyCommand(w, { type: 'assign', survivorId: s3!.id, roomId: kitchen.id }).ok).toBe(false);
     const quarters = w.state.rooms.find((r) => r.type === 'quarters')!;
-    expect(applyCommand(w, { type: 'assign', survivorId: s2!.id, roomId: quarters.id }).ok).toBe(false);
+    expect(applyCommand(w, { type: 'assign', survivorId: s3!.id, roomId: quarters.id }).ok).toBe(false);
   });
 });
 

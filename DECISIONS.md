@@ -56,3 +56,14 @@ Format: what, why, alternatives rejected. Newest at the bottom.
 - 1 tick = 0.1 real s at x1 = **6 game seconds**, so 1 game day = 14,400 ticks = 24 real minutes.
 - Speed = ticks per real second (x0.5 → 5, x1 → 10, x4 → 40, x10 → 100, x100 → 1,000), with a wall-clock budget per frame. If the sim falls behind, the HUD shows the effective speed.
 - Survivor AI decides every 5 ticks (2 Hz real at x1).
+
+## D-010 Bunker structure redesign: pre-built 3D bunker, not a Fallout Shelter grid (2026-11-13)
+
+You asked for a different structure, with rooms in any 3D direction, and for rooms to be mostly given rather than built. Your answers:
+
+- **Layout:** a 3D cell grid (6 × 6 m footprint, 4 m level pitch) with a hand-made feel. Rooms are sets of cells: wide halls, L-shapes and two-storey halls in any direction. The seed composes the bunker from hand-authored **section templates** (core, wings, a deep level, annexes) joined at ports with seeded rotation, variants, room roles, damage and seals. That gives variety per seed while each part still feels designed.
+- **Player construction:** repair, upgrade through tiers, refit an empty or ruined room to another type, and build machines and logistics freely. **No digging and no merging.** Room size is fixed by the layout.
+- **Vertical movement:** several existing shafts. One main elevator plus ladder shafts and hatches, some broken or sealed, which can be repaired to open shortcuts. Elevators are generalized: any number of shafts, one car each.
+- **Size:** compact and interesting rather than big (the bunker holds at most 5 people). Target is roughly 20–30 rooms plus corridors and shafts, 4–6 levels deep. You start in a small working core (6–8 rooms, some damaged). The other sections are sealed: frozen (needs heat), dark (needs power), collapsed (repair), keycard (mystery). Reclaiming them is the progression.
+- **Rejected:** the Fallout Shelter strip (too predictable; you asked for something different), free-form prefab modules (hard to simulate and pathfind deterministically), and pure procedural noise (doesn't feel hand-made).
+- **Replaces:** the M1.2 central-shaft generator, slot chain, and build/merge/demolish commands. The sim core, resources, survivors, machines/lanes/pipes, UI shell and player controller are kept and adapted.

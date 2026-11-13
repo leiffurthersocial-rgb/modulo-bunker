@@ -1,41 +1,43 @@
 /**
  * Commands are the ONLY way anything outside the sim changes sim state (player, UI, debug,
  * balance runner, replays). They are applied at the start of a tick in queue order.
+ *
+ * The bunker is pre-built (DECISIONS D-010): the player repairs, upgrades and refits rooms, opens
+ * sealed sections, repairs shafts, and builds machines and logistics. No digging or merging.
  */
 import type { ItemStack, RoomTypeId } from '../../data/types';
-import type { PortRef, Room, Slot } from './state';
+import type { PortRef, Room } from './state';
+import { give, has, take } from './store';
+import type { World } from './world';
 import {
   canPlaceMachine,
   hopperPort,
   inputConnected,
   makeLane,
   machinePort,
-  roomXRange,
   outputConnected,
   polylineLength,
   recipeOf,
-  roomFloor,
+  roomLevel,
   route,
   tankPort,
 } from '../systems/logistics';
-import { give, has, take } from './store';
-import type { World } from './world';
 
 export type Command =
-  | { type: 'build'; slotId: number; roomType: RoomTypeId }
   | { type: 'upgrade'; roomId: number }
-  | { type: 'merge'; roomId: number; otherRoomId: number }
-  | { type: 'demolish'; roomId: number }
   | { type: 'repair'; roomId: number }
-  | { type: 'openSeal'; slotId: number }
-  | { type: 'openFloor'; floor: number }
+  /** Strip a room and refit it as another type (tier resets to 1). */
+  | { type: 'refit'; roomId: number; roomType: RoomTypeId }
+  /** Open a sealed bulkhead (unlocks its section). */
+  | { type: 'openBulkhead'; linkId: number }
+  | { type: 'repairShaft'; shaftId: number }
   | { type: 'assign'; survivorId: number; roomId: number | null }
   | { type: 'setPriority'; roomId: number; priority: number }
   | { type: 'toggleRoom'; roomId: number; enabled: boolean }
-  | { type: 'callElevator'; floor: number }
+  | { type: 'callElevator'; shaftId: number; level: number }
   /** Keeps the car's doors open while someone stands in the doorway. */
-  | { type: 'holdElevator'; floor: number }
-  | { type: 'placeMachine'; roomId: number; machine: string; gx: number; gz: number }
+  | { type: 'holdElevator'; shaftId: number; level: number }
+  | { type: 'placeMachine'; cellId: number; machine: string; gx: number; gz: number }
   | { type: 'removeMachine'; machineId: number }
   | { type: 'repairMachine'; machineId: number }
   /** Belt from a room hopper (store) or a machine output to a machine input. */
@@ -45,7 +47,7 @@ export type Command =
   | { type: 'removeLane'; laneId: number }
   | { type: 'removePipe'; pipeId: number }
   | { type: 'debug.give'; items: ItemStack[] }
-  | { type: 'debug.unlockSlot'; slotId: number }
+  | { type: 'debug.openSection'; sectionId: number }
   | { type: 'debug.setFlag'; flag: string; value: boolean };
 
 export type CommandResult = { ok: true } | { ok: false; reason: string };
@@ -55,7 +57,7 @@ const fail = (reason: string): CommandResult => ({ ok: false, reason });
 const scale = (stacks: ItemStack[], m: number): ItemStack[] =>
   stacks.map((s) => ({ item: s.item, qty: s.qty * m }));
 
-/** Checks a command without applying it (UI cost previews, ghost validity). */
+/** Checks a command without applying it (UI cost previews, button states). */
 export function checkCommand(w: World, c: Command): CommandResult {
   return run(w, c, false);
 }
@@ -66,78 +68,46 @@ export function applyCommand(w: World, c: Command): CommandResult {
   return r;
 }
 
-/** Cost to build (tier 1) or upgrade into `tier` for a room of `cells` width. */
+/** Cost to refit to `type` (tier 1) or upgrade into `tier`, for a room of `cells` cells. */
 export function roomCost(w: World, type: RoomTypeId, tier: number, cells: number): ItemStack[] {
   const def = w.defs.rooms[type];
   return def ? scale(def.tiers[tier - 1]!.cost, cells) : [];
 }
 
 export function repairCost(w: World, room: Room): ItemStack[] {
-  return scale(w.defs.balance.repairCostPerCell, room.slotIds.length);
+  return scale(w.defs.balance.repairCostPerCell, room.cellIds.length);
 }
 
-/** Rooms adjacent to `room` on the same floor side (index -1 / +1 of its ends). */
-export function neighbours(w: World, room: Room): Room[] {
-  const slots = room.slotIds.map((id) => w.slot(id)!);
-  const first = slots[0]!;
-  const lo = Math.min(...slots.map((s) => s.index));
-  const hi = Math.max(...slots.map((s) => s.index));
-  const out: Room[] = [];
-  for (const i of [lo - 1, hi + 1]) {
-    const s = w.slotAt(first.floor, first.side, i);
-    const r = s && w.room(s.roomId);
-    if (r) out.push(r);
+/** Total heat the boilers could supply right now (kW). */
+export function heatSupply(w: World): number {
+  let kw = 0;
+  for (const r of w.state.rooms) {
+    if (r.damaged || !r.enabled || !w.roomOpen(r)) continue;
+    const def = w.defs.rooms[r.type]!;
+    for (const e of def.tiers[r.tier - 1]!.effects)
+      if (e.type === 'heatSupply') kw += e.kw * r.cellIds.length * r.powered;
   }
-  return out;
+  return kw;
 }
 
-function isFloorOpen(w: World, floor: number): boolean {
-  return w.state.floors[floor]?.state === 'open';
+/** Numeric requirement embedded in a seal label ("needs 10 kW ..."). */
+export function sealNeed(label: string): number {
+  const m = /(\d+)\s*kW/.exec(label);
+  return m ? Number(m[1]) : 0;
 }
 
 function run(w: World, c: Command, apply: boolean): CommandResult {
   const st = w.state;
   switch (c.type) {
-    case 'build': {
-      const s = w.slot(c.slotId);
-      const def = w.defs.rooms[c.roomType];
-      if (!s) return fail('No such slot');
-      if (!def || !def.buildable) return fail('Cannot build that');
-      if (!isFloorOpen(w, s.floor)) return fail('Floor is sealed');
-      if (s.state !== 'empty')
-        return fail(s.state === 'rock' ? 'Solid rock' : s.state === 'sealed' ? 'Sealed' : 'Occupied');
-      const cost = roomCost(w, c.roomType, 1, 1);
-      if (!has(w, cost)) return fail('Not enough materials');
-      if (!apply) return OK;
-      take(w, cost);
-      const room: Room = {
-        id: w.nextId(),
-        type: c.roomType,
-        tier: 1,
-        slotIds: [s.id],
-        damaged: false,
-        enabled: true,
-        priority: def.priority,
-        temp: st.outsideTemp + 10,
-        powered: 1,
-        progress: def.tiers[0].effects.map(() => 0),
-        workers: [],
-      };
-      s.state = 'room';
-      s.roomId = room.id;
-      st.rooms.push(room);
-      st.rooms.sort((a, b) => a.id - b.id);
-      w.markTopologyChanged();
-      w.emit({ type: 'room.built', roomId: room.id, roomType: room.type, slotIds: room.slotIds });
-      return OK;
-    }
     case 'upgrade': {
       const r = w.room(c.roomId);
       if (!r) return fail('No such room');
+      if (!w.roomOpen(r)) return fail('Section is sealed');
       const def = w.defs.rooms[r.type]!;
+      if (!def.buildable) return fail('Cannot be upgraded');
       if (r.damaged) return fail('Repair it first');
       if (r.tier >= 3) return fail('Already max tier');
-      const cost = roomCost(w, r.type, r.tier + 1, r.slotIds.length);
+      const cost = roomCost(w, r.type, r.tier + 1, r.cellIds.length);
       if (!has(w, cost)) return fail('Not enough materials');
       if (!apply) return OK;
       take(w, cost);
@@ -147,86 +117,10 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       w.emit({ type: 'room.upgraded', roomId: r.id, tier: r.tier });
       return OK;
     }
-    case 'merge': {
-      const a = w.room(c.roomId);
-      const b = w.room(c.otherRoomId);
-      if (!a || !b || a === b) return fail('No such room');
-      if (a.type !== b.type) return fail('Only rooms of the same type merge');
-      if (a.tier !== b.tier) return fail('Upgrade both to the same tier first');
-      if (a.damaged || b.damaged) return fail('Repair first');
-      const def = w.defs.rooms[a.type]!;
-      if (a.slotIds.length + b.slotIds.length > def.maxWidth) return fail(`Max width is ${def.maxWidth}`);
-      if (!neighbours(w, a).includes(b)) return fail('Rooms must be adjacent');
-      if (!apply) return OK;
-      const keep = a.id < b.id ? a : b;
-      const gone = keep === a ? b : a;
-      // Remember machine world positions; the merged room's grid origin may move.
-      const moved = st.machines
-        .filter((m) => m.roomId === a.id || m.roomId === b.id)
-        .map((m) => ({ m, x: roomXRange(w, w.room(m.roomId)!)[0] + m.gx }));
-      const slots = [...keep.slotIds, ...gone.slotIds]
-        .map((id) => w.slot(id)!)
-        .sort((x, y) => x.index - y.index);
-      keep.temp = (keep.temp * keep.slotIds.length + gone.temp * gone.slotIds.length) / slots.length;
-      keep.slotIds = slots.map((s) => s.id);
-      for (const s of slots) s.roomId = keep.id;
-      for (const sid of gone.workers) {
-        const sv = w.survivor(sid);
-        if (sv) sv.assignedRoom = keep.id;
-        keep.workers.push(sid);
-      }
-      const nx0 = roomXRange(w, keep)[0];
-      for (const { m, x } of moved) {
-        m.roomId = keep.id;
-        m.gx = Math.round(x - nx0);
-      }
-      st.rooms = st.rooms.filter((r) => r !== gone);
-      w.markTopologyChanged();
-      w.emit({ type: 'room.merged', roomId: keep.id, absorbedRoomId: gone.id });
-      return OK;
-    }
-    case 'demolish': {
-      const r = w.room(c.roomId);
-      if (!r) return fail('No such room');
-      if (!w.defs.rooms[r.type]!.buildable) return fail('Cannot demolish this');
-      if (!apply) return OK;
-      const refund = w.defs.balance.demolishRefund;
-      for (let t = 1; t <= r.tier; t++) give(w, roomCost(w, r.type, t, r.slotIds.length), refund);
-      for (const sid of r.workers) {
-        const sv = w.survivor(sid);
-        if (sv) sv.assignedRoom = null;
-      }
-      for (const m of st.machines.filter((m) => m.roomId === r.id)) {
-        give(w, w.defs.machines[m.type]!.cost, refund);
-      }
-      for (const m of st.machines.filter((m) => m.roomId === r.id)) {
-        for (const l of st.lanes.filter(
-          (l) =>
-            (l.from?.kind === 'machine' && l.from.id === m.id) ||
-            (l.to?.kind === 'machine' && l.to.id === m.id) ||
-            (l.from?.kind === 'room' && l.from.id === r.id),
-        ))
-          dropLane(w, l.id);
-        for (const p of st.pipes.filter(
-          (p) =>
-            p.producers.some((x) => x.machineId === m.id) || p.consumers.some((x) => x.machineId === m.id),
-        ))
-          dropPipe(w, p.id);
-      }
-      st.machines = st.machines.filter((m) => m.roomId !== r.id);
-      for (const id of r.slotIds) {
-        const s = w.slot(id)!;
-        s.state = 'empty';
-        s.roomId = null;
-      }
-      st.rooms = st.rooms.filter((x) => x !== r);
-      w.markTopologyChanged();
-      w.emit({ type: 'room.demolished', roomId: r.id, slotIds: r.slotIds });
-      return OK;
-    }
     case 'repair': {
       const r = w.room(c.roomId);
       if (!r) return fail('No such room');
+      if (!w.roomOpen(r)) return fail('Section is sealed');
       if (!r.damaged) return fail('Not damaged');
       const cost = repairCost(w, r);
       if (!has(w, cost)) return fail('Not enough materials');
@@ -237,33 +131,76 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       w.emit({ type: 'notice', text: `${w.defs.rooms[r.type]!.name} repaired`, severity: 'info' });
       return OK;
     }
-    case 'openSeal': {
-      const s = w.slot(c.slotId);
-      if (!s || s.state !== 'sealed' || !s.seal) return fail('Not sealed');
-      if (!isFloorOpen(w, s.floor)) return fail('Floor is sealed');
-      if (!isReachableSeal(w, s)) return fail('Open the cells in front first');
-      const seal = s.seal;
-      if (seal.kind === 'keycard' && !st.flags[`keycard:${s.id}`] && !st.flags['keycard:any'])
-        return fail('Needs a keycard');
-      if (seal.kind === 'power' && st.power.produced - st.power.demand < w.defs.balance.powerSealSurplusKw)
-        return fail(`Needs ${w.defs.balance.powerSealSurplusKw} kW spare power`);
-      if (!has(w, seal.cost)) return fail('Not enough materials');
-      if (!apply) return OK;
-      take(w, seal.cost);
-      openSlot(w, s);
-      return OK;
-    }
-    case 'openFloor': {
-      const f = st.floors[c.floor];
-      if (!f || f.state !== 'sealed') return fail('Floor not sealed');
-      if (!isFloorOpen(w, c.floor - 1)) return fail('Open the floor above first');
-      const cost = w.defs.balance.openFloorCost;
+    case 'refit': {
+      const r = w.room(c.roomId);
+      const def = w.defs.rooms[c.roomType];
+      if (!r) return fail('No such room');
+      if (!def || !def.buildable) return fail('Cannot refit to that');
+      if (!w.roomOpen(r)) return fail('Section is sealed');
+      if (r.type === c.roomType) return fail('Already that type');
+      if (!w.defs.rooms[r.type]!.buildable && r.type !== 'empty') return fail('This room cannot be refitted');
+      if (r.damaged) return fail('Repair it first');
+      const cost = roomCost(w, c.roomType, 1, r.cellIds.length);
       if (!has(w, cost)) return fail('Not enough materials');
       if (!apply) return OK;
       take(w, cost);
-      f.state = 'open';
+      // Machines that do not belong in the new room type go back to the store.
+      for (const m of st.machines.filter((m) => w.cell(m.cellId)?.roomId === r.id)) {
+        const md = w.defs.machines[m.type]!;
+        if (md.allowedRooms.length && !md.allowedRooms.includes(c.roomType))
+          run(w, { type: 'removeMachine', machineId: m.id }, true);
+      }
+      for (const sid of r.workers) {
+        const sv = w.survivor(sid);
+        if (sv) sv.assignedRoom = null;
+      }
+      r.workers = [];
+      r.type = c.roomType;
+      r.tier = 1;
+      r.priority = def.priority;
+      r.progress = def.tiers[0].effects.map(() => 0);
       w.markTopologyChanged();
-      w.emit({ type: 'notice', text: `Floor ${c.floor + 1} landing unsealed`, severity: 'info' });
+      w.emit({ type: 'notice', text: `Refitted as ${def.name}`, severity: 'info' });
+      return OK;
+    }
+    case 'openBulkhead': {
+      const l = st.links.find((x) => x.id === c.linkId);
+      if (!l || !l.sealed || !l.seal) return fail('Not sealed');
+      const a = w.cell(l.a)!;
+      const b = w.cell(l.b)!;
+      if (!w.cellOpen(a) && !w.cellOpen(b)) return fail('Not reachable yet');
+      const seal = l.seal;
+      const need = sealNeed(seal.label);
+      const spare = st.power.produced - st.power.demand;
+      if (seal.kind === 'keycard' && !st.flags['keycard:any']) return fail('Needs a keycard');
+      if (seal.kind === 'power' && spare < need)
+        return fail(`Needs ${need} kW spare power (have ${Math.max(0, spare).toFixed(0)})`);
+      if (seal.kind === 'thaw' && heatSupply(w) < need)
+        return fail(`Needs ${need} kW of heating (have ${heatSupply(w).toFixed(0)})`);
+      if (!has(w, seal.cost)) return fail('Not enough materials');
+      if (!apply) return OK;
+      take(w, seal.cost);
+      l.sealed = false;
+      const section = st.sections.find((s) => s.id === (w.cellOpen(a) ? b.sectionId : a.sectionId))!;
+      section.open = true;
+      w.markTopologyChanged();
+      w.emit({ type: 'notice', text: `${section.name} unsealed`, severity: 'info' });
+      return OK;
+    }
+    case 'repairShaft': {
+      const s = w.shaft(c.shaftId);
+      if (!s) return fail('No such shaft');
+      if (!s.broken) return fail('Not broken');
+      if (!has(w, s.repairCost)) return fail('Not enough materials');
+      if (!apply) return OK;
+      take(w, s.repairCost);
+      s.broken = false;
+      w.markTopologyChanged();
+      w.emit({
+        type: 'notice',
+        text: `${s.kind === 'elevator' ? 'Elevator' : 'Ladder'} repaired`,
+        severity: 'info',
+      });
       return OK;
     }
     case 'assign': {
@@ -272,7 +209,8 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       if (c.roomId !== null) {
         const r = w.room(c.roomId);
         if (!r) return fail('No such room');
-        const cap = w.defs.rooms[r.type]!.tiers[r.tier - 1]!.workersPerCell * r.slotIds.length;
+        if (!w.roomOpen(r)) return fail('Section is sealed');
+        const cap = w.defs.rooms[r.type]!.tiers[r.tier - 1]!.workersPerCell * r.cellIds.length;
         if (cap === 0) return fail('Nobody works here');
         if (!r.workers.includes(sv.id) && r.workers.length >= cap) return fail('Room is fully staffed');
       }
@@ -302,18 +240,22 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       return OK;
     }
     case 'callElevator': {
-      if (!isFloorOpen(w, c.floor)) return fail('Floor is sealed');
-      if (apply && !st.elevator.queue.includes(c.floor)) st.elevator.queue.push(c.floor);
+      const s = w.shaft(c.shaftId);
+      const el = w.elevator(c.shaftId);
+      if (!s || !el) return fail('No elevator');
+      if (s.broken) return fail('Elevator is broken');
+      if (c.level < s.top || c.level > s.bottom) return fail('Not on this shaft');
+      if (apply && !el.queue.includes(c.level)) el.queue.push(c.level);
       return OK;
     }
     case 'holdElevator': {
-      const el = st.elevator;
-      if (el.target !== null || Math.abs(el.pos - c.floor) > 1e-6) return fail('Car not here');
+      const el = w.elevator(c.shaftId);
+      if (!el || el.target !== null || Math.abs(el.pos - c.level) > 1e-6) return fail('Car not here');
       if (apply) el.doorTicks = Math.max(el.doorTicks, 3);
       return OK;
     }
     case 'placeMachine': {
-      const err = canPlaceMachine(w, c.roomId, c.machine, c.gx, c.gz);
+      const err = canPlaceMachine(w, c.cellId, c.machine, c.gx, c.gz);
       if (err) return fail(err);
       if (!apply) return OK;
       const def = w.defs.machines[c.machine]!;
@@ -321,7 +263,8 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       st.machines.push({
         id: w.nextId(),
         type: c.machine,
-        roomId: c.roomId,
+        roomId: w.cell(c.cellId)!.roomId!,
+        cellId: c.cellId,
         gx: c.gx,
         gz: c.gz,
         rot: 0,
@@ -340,16 +283,11 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       const m = st.machines.find((x) => x.id === c.machineId);
       if (!m) return fail('No such machine');
       if (!apply) return OK;
-      // Return buffered items, refund half the cost, drop its connections.
       for (const [it, q] of Object.entries(m.inputs)) give(w, [{ item: it, qty: q }]);
       for (const [it, q] of Object.entries(m.outputs)) give(w, [{ item: it, qty: q }]);
       give(w, w.defs.machines[m.type]!.cost, w.defs.balance.demolishRefund);
-      for (const l of st.lanes.filter(
-        (l) =>
-          (l.from?.kind === 'machine' && l.from.id === m.id) ||
-          (l.to?.kind === 'machine' && l.to.id === m.id),
-      ))
-        dropLane(w, l.id);
+      const touches = (p: PortRef | null) => p?.kind === 'machine' && p.id === m.id;
+      for (const l of st.lanes.filter((l) => touches(l.from) || touches(l.to))) dropLane(w, l.id);
       for (const p of st.pipes.filter(
         (p) => p.producers.some((x) => x.machineId === m.id) || p.consumers.some((x) => x.machineId === m.id),
       ))
@@ -373,16 +311,15 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       const to = st.machines.find((x) => x.id === c.toMachine);
       if (!to) return fail('No target machine');
       if (inputConnected(w, to)) return fail('Input already connected');
-      const rec = recipeOf(w, to);
-      const conveyable = rec.inputs.find((i) => w.defs.items[i.item]?.conveyable);
+      const conveyable = recipeOf(w, to).inputs.find((i) => w.defs.items[i.item]?.conveyable);
       if (!conveyable) return fail('Input is a liquid: use a pipe');
       let a: { x: number; z: number };
-      let floor: number;
+      let roomId: number;
       if (c.from.kind === 'room') {
         const r = w.room(c.from.id);
         if (!r) return fail('No such room');
         a = hopperPort(w, r);
-        floor = roomFloor(w, r);
+        roomId = r.id;
       } else if (c.from.kind === 'machine') {
         const src = c.from;
         const m = st.machines.find((x) => x.id === src.id);
@@ -392,17 +329,17 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
         if (!w.defs.items[out.item]?.conveyable) return fail('Output is a liquid: use a pipe');
         if (out.item !== conveyable.item) return fail(`Target needs ${conveyable.item}`);
         a = machinePort(w, m, 'out');
-        floor = roomFloor(w, w.room(m.roomId)!);
+        roomId = m.roomId;
       } else return fail('Bad source');
-      if (roomFloor(w, w.room(to.roomId)!) !== floor)
-        return fail('Same floor only (item elevator comes later)');
+      if (roomId !== to.roomId) return fail('Same room only (item elevator comes later)');
       const b = machinePort(w, to, 'in');
       const pts = route(a, b, c.from.kind === 'room' ? 0 : 1, -1);
       const cost = scale(w.defs.conveyors[0]!.costPerMetre, Math.ceil(polylineLength(pts)));
       if (!has(w, cost)) return fail('Not enough materials');
       if (!apply) return OK;
       take(w, cost);
-      st.lanes.push(makeLane(w, w.nextId(), floor, pts, c.from, { kind: 'machine', id: to.id, slot: 0 }));
+      const level = roomLevel(w, w.room(roomId)!);
+      st.lanes.push(makeLane(w, w.nextId(), level, pts, c.from, { kind: 'machine', id: to.id, slot: 0 }));
       return OK;
     }
     case 'connectPipe': {
@@ -411,18 +348,19 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       if (outputConnected(w, src)) return fail('Output already connected');
       const out = recipeOf(w, src).outputs[0]!;
       if (w.defs.items[out.item]?.conveyable) return fail('Output is an item: use a belt');
-      const floor = roomFloor(w, w.room(src.roomId)!);
+      const room = w.room(src.roomId)!;
+      const level = roomLevel(w, room);
       const a = machinePort(w, src, 'out');
       let b: { x: number; z: number };
       let consumers: { machineId: number }[] = [];
-      if (c.toMachine === 'tank') b = tankPort(w, w.room(src.roomId)!);
+      if (c.toMachine === 'tank') b = tankPort(w, room);
       else {
         const dst = st.machines.find((x) => x.id === c.toMachine);
         if (!dst || dst === src) return fail('No target machine');
         if (inputConnected(w, dst)) return fail('Input already connected');
         if (!recipeOf(w, dst).inputs.some((i) => i.item === out.item))
           return fail(`Target does not take ${out.item}`);
-        if (roomFloor(w, w.room(dst.roomId)!) !== floor) return fail('Same floor only');
+        if (dst.roomId !== src.roomId) return fail('Same room only');
         b = machinePort(w, dst, 'in');
         consumers = [{ machineId: dst.id }];
       }
@@ -436,7 +374,7 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
         fluid: out.item,
         volume: 0,
         capacity: w.defs.pipes.capacity,
-        segments: pts.slice(1).map((p, i) => ({ floor, x1: pts[i]!.x, z1: pts[i]!.z, x2: p.x, z2: p.z })),
+        segments: pts.slice(1).map((p, i) => ({ level, x1: pts[i]!.x, z1: pts[i]!.z, x2: p.x, z2: p.z })),
         producers: [{ machineId: src.id }],
         consumers,
         toStore: c.toMachine === 'tank',
@@ -454,18 +392,17 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
     case 'debug.give':
       if (apply) for (const s of c.items) st.store[s.item] = (st.store[s.item] ?? 0) + s.qty;
       return OK;
-    case 'debug.unlockSlot': {
-      const s = w.slot(c.slotId);
-      if (!s) return fail('No such slot');
+    case 'debug.openSection': {
+      const sec = st.sections.find((s) => s.id === c.sectionId);
+      if (!sec) return fail('No such section');
       if (!apply) return OK;
-      const f = st.floors[s.floor];
-      if (f && f.state !== 'open') f.state = 'open';
-      if (s.state === 'sealed') openSlot(w, s);
-      else if (s.state === 'rock') {
-        s.state = 'empty';
-        w.markTopologyChanged();
-        w.emit({ type: 'slot.changed', slotId: s.id });
+      sec.open = true;
+      for (const l of st.links) {
+        const a = w.cell(l.a)!;
+        const b = w.cell(l.b)!;
+        if (l.sealed && (a.sectionId === sec.id || b.sectionId === sec.id)) l.sealed = false;
       }
+      w.markTopologyChanged();
       return OK;
     }
     case 'debug.setFlag':
@@ -486,47 +423,4 @@ function dropPipe(w: World, id: number): void {
   if (!p) return;
   if (p.volume > 0) give(w, [{ item: p.fluid, qty: p.volume }]);
   w.state.pipes = w.state.pipes.filter((x) => x !== p);
-}
-
-/** A sealed cell can be opened only if every cell between it and the shaft is open (not sealed/rock). */
-export function isReachableSeal(w: World, s: Slot): boolean {
-  for (let i = 0; i < s.index; i++) {
-    const t = w.slotAt(s.floor, s.side, i);
-    if (!t || t.state === 'sealed' || t.state === 'rock') return false;
-  }
-  return true;
-}
-
-function openSlot(w: World, s: Slot): void {
-  const seal = s.seal;
-  s.state = 'empty';
-  delete s.seal;
-  if (seal?.loot) give(w, seal.loot);
-  if (seal?.hiddenRoom) {
-    const def = w.defs.rooms[seal.hiddenRoom]!;
-    const room: Room = {
-      id: w.nextId(),
-      type: seal.hiddenRoom,
-      tier: 1,
-      slotIds: [s.id],
-      damaged: def.buildable,
-      enabled: true,
-      priority: def.priority,
-      temp: w.state.outsideTemp + 5,
-      powered: 1,
-      progress: def.tiers[0].effects.map(() => 0),
-      workers: [],
-    };
-    s.state = 'room';
-    s.roomId = room.id;
-    w.state.rooms.push(room);
-    w.state.rooms.sort((a, b) => a.id - b.id);
-  }
-  w.markTopologyChanged();
-  w.emit({ type: 'slot.changed', slotId: s.id });
-  w.emit({
-    type: 'notice',
-    text: seal?.hiddenRoom ? `Unsealed: ${w.defs.rooms[seal.hiddenRoom]!.name}` : 'Cell unsealed',
-    severity: 'info',
-  });
 }

@@ -105,21 +105,28 @@ describe('machines, belts and pipes', () => {
     expect(w.state.lanes[0]!.items.length).toBeGreaterThanOrEqual(0);
   });
 
-  it('a 2-wide machine cannot overlap another or leave the room', () => {
+  it('machines use free corner slots in allowed rooms only', () => {
     const w = waterWorld();
     const plant = w.state.rooms.find((r) => r.type === 'water_plant')!;
-    expect(
-      applyCommand(w, { type: 'placeMachine', roomId: plant.id, machine: 'ice_melter', gx: 0, gz: 0 }).ok,
-    ).toBe(true);
-    expect(
-      applyCommand(w, { type: 'placeMachine', roomId: plant.id, machine: 'purifier', gx: 1, gz: 1 }).ok,
-    ).toBe(false);
-    expect(
-      applyCommand(w, { type: 'placeMachine', roomId: plant.id, machine: 'purifier', gx: 9, gz: 0 }).ok,
-    ).toBe(false);
+    const cellId = plant.cellIds[0]!;
+    expect(applyCommand(w, { type: 'placeMachine', cellId, machine: 'ice_melter', gx: 0, gz: 0 }).ok).toBe(
+      true,
+    );
+    expect(applyCommand(w, { type: 'placeMachine', cellId, machine: 'purifier', gx: 0, gz: 0 }).ok).toBe(
+      false,
+    );
+    expect(applyCommand(w, { type: 'placeMachine', cellId, machine: 'purifier', gx: 2, gz: 0 }).ok).toBe(
+      false,
+    );
     const kitchen = w.state.rooms.find((r) => r.type === 'kitchen')!;
     expect(
-      applyCommand(w, { type: 'placeMachine', roomId: kitchen.id, machine: 'purifier', gx: 0, gz: 0 }).ok,
+      applyCommand(w, {
+        type: 'placeMachine',
+        cellId: kitchen.cellIds[0]!,
+        machine: 'purifier',
+        gx: 0,
+        gz: 0,
+      }).ok,
     ).toBe(false);
   });
 

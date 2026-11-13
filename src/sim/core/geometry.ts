@@ -1,36 +1,45 @@
-/** Pure layout math shared by sim (pathing) and render (placement). */
+/** Pure layout math shared by sim (navigation) and render (placement). */
 import { GEO } from './state';
-import type { Side } from './state';
+import type { Cell } from './state';
 
-/** Floor surface height (y) of floor index f (0 = top). */
-export const floorY = (f: number): number => -f * GEO.floorPitch;
+/** Floor surface height (y) of a level (0 = top). Works with fractional levels (elevator cars). */
+export const floorY = (level: number): number => -level * GEO.levelPitch;
 
-/** x of the inner edge (towards the shaft) of cell `index` on `side`. */
-export function cellInnerX(side: Side, index: number): number {
-  return side * (GEO.shaftWidth / 2 + index * GEO.cellWidth);
-}
-export function cellCenterX(side: Side, index: number): number {
-  return side * (GEO.shaftWidth / 2 + index * GEO.cellWidth + GEO.cellWidth / 2);
-}
-/** x-range [min,max] covered by a run of cells on one side. */
-export function cellsXRange(side: Side, indices: number[]): [number, number] {
-  const lo = Math.min(...indices);
-  const hi = Math.max(...indices);
-  const a = cellInnerX(side, lo);
-  const b = cellInnerX(side, hi + 1);
-  return a < b ? [a, b] : [b, a];
+export const cellKey = (x: number, y: number, z: number): string => `${x},${y},${z}`;
+
+/** World-space min corner of a cell's footprint. */
+export const cellX0 = (c: { x: number }): number => c.x * GEO.cell;
+export const cellZ0 = (c: { z: number }): number => c.z * GEO.cell;
+
+export function cellCenter(c: { x: number; z: number }): { x: number; z: number } {
+  return { x: c.x * GEO.cell + GEO.cell / 2, z: c.z * GEO.cell + GEO.cell / 2 };
 }
 
-/** The aisle survivors walk along (z) and the landing spot in front of the elevator. */
-export const AISLE_Z = GEO.doorZ;
-export const LANDING = { x: 0, z: -2.5 } as const;
-export const ELEVATOR_DOOR = { x: 0, z: -0.6 } as const;
-
-/** Side/index of the cell containing floor-local x, or null when in the shaft. */
-export function cellAtX(x: number): { side: Side; index: number } | null {
-  const ax = Math.abs(x) - GEO.shaftWidth / 2;
-  if (ax < 0) return null;
-  const index = Math.floor(ax / GEO.cellWidth);
-  if (index >= GEO.cellsPerSide) return null;
-  return { side: x < 0 ? -1 : 1, index };
+/** Grid coordinates containing world point (x, z) on a level. */
+export function gridAt(x: number, z: number): { x: number; z: number } {
+  return { x: Math.floor(x / GEO.cell), z: Math.floor(z / GEO.cell) };
 }
+
+/** Level containing a world height (floor surface .. ceiling belongs to that level). */
+export function levelAtY(y: number): number {
+  return Math.floor((-y + GEO.cellHeight) / GEO.levelPitch);
+}
+
+export type Dir = '+x' | '-x' | '+z' | '-z';
+export const DIRS: { d: Dir; dx: number; dz: number }[] = [
+  { d: '+x', dx: 1, dz: 0 },
+  { d: '-x', dx: -1, dz: 0 },
+  { d: '+z', dx: 0, dz: 1 },
+  { d: '-z', dx: 0, dz: -1 },
+];
+
+/** Midpoint of the doorway between two horizontally adjacent cells (world x/z). */
+export function doorPoint(a: Cell, b: Cell): { x: number; z: number } {
+  const ca = cellCenter(a);
+  const cb = cellCenter(b);
+  return { x: (ca.x + cb.x) / 2, z: (ca.z + cb.z) / 2 };
+}
+
+/** Elevator well inside a shaft cell (centre square) and the ladder column (a corner). */
+export const WELL = { inset: 1.2 } as const;
+export const LADDER_SIZE = 0.8;

@@ -6,16 +6,13 @@
  * items by hand (slow, and only while a worker is present): automation frees workers.
  */
 import { GAME_SECONDS_PER_TICK, DT_HOURS } from '../core/time';
-import { cellsXRange } from '../core/geometry';
-import type { Lane, MachineState, PipeNetwork, PortRef, Room } from '../core/state';
+import { cellCenter, cellX0, cellZ0 } from '../core/geometry';
+import type { Cell, Lane, MachineState, PipeNetwork, PortRef, Room } from '../core/state';
 import { give, has, take } from '../core/store';
 import type { World } from '../core/world';
 import { UNITS_PER_M, advance, canInsert, frontReady, insert, takeFront } from './lanes';
 import { roomInfo } from './rooms';
 
-/** Machine area inside a room: front half, 1 m grid, origin at (roomX0 + 0.5, -0.5). */
-export const MACHINE_Z0 = -0.5;
-export const MACHINE_DEPTH = 4;
 const BELT_Y = 0.35;
 
 export interface Pt {
@@ -23,66 +20,42 @@ export interface Pt {
   z: number;
 }
 
-export function roomXRange(w: World, r: Room): [number, number] {
-  const first = w.slot(r.slotIds[0]!)!;
-  return cellsXRange(
-    first.side,
-    r.slotIds.map((id) => w.slot(id)!.index),
-  );
+/** Walkable cells of a room (its lowest level); machines and hatches live there. */
+export function roomFloorCells(w: World, r: Room): Cell[] {
+  const cells = r.cellIds.map((id) => w.cell(id)!);
+  const lowest = Math.max(...cells.map((c) => c.y));
+  return cells.filter((c) => c.y === lowest);
 }
 
-export function roomFloor(w: World, r: Room): number {
-  return w.slot(r.slotIds[0]!)!.floor;
+export function roomLevel(w: World, r: Room): number {
+  return Math.max(...r.cellIds.map((id) => w.cell(id)!.y));
 }
 
-/** Grid columns available in a room for machines. */
-export function gridWidth(w: World, r: Room): number {
-  const [x0, x1] = roomXRange(w, r);
-  return Math.floor(x1 - x0 - 1);
+/**
+ * Machines occupy 2x2 m corner slots of a cell (gx, gz in {0,1}), keeping the centre cross free
+ * as a walkway between doors.
+ */
+export function machineCenter(w: World, m: { cellId: number; gx: number; gz: number }): Pt {
+  const c = w.cell(m.cellId)!;
+  return { x: cellX0(c) + (m.gx ? 4.5 : 1.5), z: cellZ0(c) + (m.gz ? 4.5 : 1.5) };
 }
 
-export function machineSize(w: World, m: { type: string; rot: number }): { w: number; d: number } {
-  const s = w.defs.machines[m.type]!.size;
-  return m.rot % 2 === 0 ? { w: s.w, d: s.d } : { w: s.d, d: s.w };
-}
-
-/** Machine footprint centre (floor-local). */
-export function machineCenter(w: World, m: MachineState): Pt {
-  const r = w.room(m.roomId)!;
-  const [x0] = roomXRange(w, r);
-  const sz = machineSize(w, m);
-  return { x: x0 + 0.5 + m.gx + sz.w / 2, z: MACHINE_Z0 + m.gz + sz.d / 2 };
-}
-
-/** Input port on the -x face, output port on the +x face (rotation not used in Phase 1). */
+/** Input port on the -x face, output port on the +x face. */
 export function machinePort(w: World, m: MachineState, kind: 'in' | 'out'): Pt {
   const c = machineCenter(w, m);
-  const sz = machineSize(w, m);
-  return { x: c.x + (kind === 'in' ? -1 : 1) * (sz.w / 2), z: c.z };
+  return { x: c.x + (kind === 'in' ? -1 : 1), z: c.z };
 }
 
-/** Room hopper (store -> belt) at the front-left of the machine area. */
+/** Room hopper (store -> belt): a floor hatch just west of the first floor cell's centre. */
 export function hopperPort(w: World, r: Room): Pt {
-  const [x0] = roomXRange(w, r);
-  return { x: x0 + 0.5, z: MACHINE_Z0 - 0.1 };
+  const c = cellCenter(roomFloorCells(w, r)[0]!);
+  return { x: c.x - 0.6, z: c.z };
 }
 
-/** Room tank inlet (pipe -> store) at the front-right of the machine area. */
+/** Room tank inlet (pipe -> store): just east of the first floor cell's centre. */
 export function tankPort(w: World, r: Room): Pt {
-  const [, x1] = roomXRange(w, r);
-  return { x: x1 - 0.5, z: MACHINE_Z0 - 0.1 };
-}
-
-export function portPoint(w: World, p: PortRef, dir: 'from' | 'to'): Pt | null {
-  if (p.kind === 'machine') {
-    const m = w.state.machines.find((x) => x.id === p.id);
-    return m ? machinePort(w, m, dir === 'from' ? 'out' : 'in') : null;
-  }
-  if (p.kind === 'room') {
-    const r = w.room(p.id);
-    return r ? (dir === 'from' ? hopperPort(w, r) : tankPort(w, r)) : null;
-  }
-  return null;
+  const c = cellCenter(roomFloorCells(w, r)[0]!);
+  return { x: c.x + 0.6, z: c.z };
 }
 
 /** L-shaped route between two ports, stepping 0.5 m out of each port first. */
@@ -126,52 +99,48 @@ export const BELT_HEIGHT = BELT_Y;
 
 export function canPlaceMachine(
   w: World,
-  roomId: number,
+  cellId: number,
   type: string,
   gx: number,
   gz: number,
-  rot = 0,
 ): string | null {
-  const r = w.room(roomId);
+  const c = w.cell(cellId);
+  const r = c && w.room(c.roomId);
   const def = w.defs.machines[type];
-  if (!r || !def) return 'Nothing to place on';
+  if (!c || !r || !def) return 'Machines go inside rooms';
   if (def.allowedRooms.length && !def.allowedRooms.includes(r.type))
     return `Goes in: ${def.allowedRooms.map((id) => w.defs.rooms[id]!.name).join(', ')}`;
+  if (!w.roomOpen(r)) return 'Section is sealed';
   if (r.damaged) return 'Repair the room first';
-  const sz = machineSize(w, { type, rot });
-  if (gx < 0 || gz < 0 || gx + sz.w > gridWidth(w, r) || gz + sz.d > MACHINE_DEPTH)
-    return 'Does not fit here';
-  for (const m of w.state.machines) {
-    if (m.roomId !== roomId) continue;
-    const o = machineSize(w, m);
-    if (gx < m.gx + o.w && m.gx < gx + sz.w && gz < m.gz + o.d && m.gz < gz + sz.d)
-      return 'Overlaps another machine';
-  }
+  if (!roomFloorCells(w, r).includes(c)) return 'No floor here';
+  if (!(gx === 0 || gx === 1) || !(gz === 0 || gz === 1)) return 'Does not fit here';
+  if (w.state.machines.some((m) => m.cellId === cellId && m.gx === gx && m.gz === gz)) return 'Slot taken';
   if (!has(w, def.cost)) return 'Not enough materials';
   return null;
 }
 
-/** First free grid spot in a room for a machine type, preferring the one nearest `near`. */
+/** Free machine slot in a room, preferring the one nearest `near`. */
 export function freeSpot(
   w: World,
   roomId: number,
   type: string,
   near?: Pt,
-): { gx: number; gz: number } | null {
+): { cellId: number; gx: number; gz: number } | null {
   const r = w.room(roomId);
   if (!r) return null;
-  const [x0] = roomXRange(w, r);
-  let best: { gx: number; gz: number; d: number } | null = null;
-  for (let gz = 0; gz < MACHINE_DEPTH; gz++)
-    for (let gx = 0; gx < gridWidth(w, r); gx++) {
-      const err = canPlaceMachine(w, roomId, type, gx, gz);
-      if (err && err !== 'Not enough materials') continue;
-      const cx = x0 + 0.5 + gx + 1;
-      const cz = MACHINE_Z0 + gz + 1;
-      const d = near ? Math.abs(cx - near.x) + Math.abs(cz - near.z) : gz * 100 + gx;
-      if (!best || d < best.d) best = { gx, gz, d };
-    }
-  return best ? { gx: best.gx, gz: best.gz } : null;
+  let best: { cellId: number; gx: number; gz: number; d: number } | null = null;
+  let k = 0;
+  for (const c of roomFloorCells(w, r))
+    for (const gz of [0, 1])
+      for (const gx of [0, 1]) {
+        k++;
+        const err = canPlaceMachine(w, c.id, type, gx, gz);
+        if (err && err !== 'Not enough materials') continue;
+        const p = machineCenter(w, { cellId: c.id, gx, gz });
+        const d = near ? Math.abs(p.x - near.x) + Math.abs(p.z - near.z) : k;
+        if (!best || d < best.d) best = { cellId: c.id, gx, gz, d };
+      }
+  return best ? { cellId: best.cellId, gx: best.gx, gz: best.gz } : null;
 }
 
 export function recipeOf(w: World, m: MachineState) {
@@ -313,11 +282,11 @@ export function laneItem(w: World, l: Lane): string | null {
 }
 
 /** Fixed-point lane from a polyline (metres). */
-export function makeLane(w: World, id: number, floor: number, pts: Pt[], from: PortRef, to: PortRef): Lane {
+export function makeLane(w: World, id: number, level: number, pts: Pt[], from: PortRef, to: PortRef): Lane {
   const tier = w.defs.conveyors[0]!;
   return {
     id,
-    floor,
+    level,
     points: pts,
     length: Math.round(polylineLength(pts) * UNITS_PER_M),
     items: [],

@@ -33,7 +33,7 @@ export function foodTotal(w: World): number {
 
 export function sample(w: World): Sample {
   const st = w.state;
-  const temps = st.rooms.filter((r) => !r.damaged).map((r) => r.temp);
+  const temps = st.rooms.filter((r) => !r.damaged && w.roomOpen(r)).map((r) => r.temp);
   return {
     tick: st.tick,
     powerProduced: st.power.produced,

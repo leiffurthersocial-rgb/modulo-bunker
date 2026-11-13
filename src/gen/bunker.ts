@@ -1,189 +1,297 @@
 /**
- * Seeded bunker generation. Pure: same seed + same defs => identical SimState.
- * Layout rule (keeps reachability valid by construction): each floor side is a chain from the
- * shaft outward: [open cells (rooms/empty)] [sealed cells] [rock].
+ * Seeded bunker generation from hand-authored section templates (sections.json). Pure:
+ * same seed + same defs => identical SimState.
+ *
+ * The core is placed at the origin. Every other section is attached at a free port: its entry
+ * port is rotated to face the parent port, optionally with a short seeded tunnel, and placed only
+ * if no cells collide. The link across that seam is the section's sealed bulkhead.
  */
 import type { Defs, RoomTypeId } from '../data/types';
 import { Rng } from './rng';
-import { GEO, SAVE_SCHEMA_VERSION } from '../sim/core/state';
-import type { Room, SimState, Slot, Side, Survivor, SealKind } from '../sim/core/state';
+import sectionsJson from './sections.json';
+import { SAVE_SCHEMA_VERSION } from '../sim/core/state';
+import type { Cell, Link, Room, Section, Shaft, SimState, Survivor, SealKind } from '../sim/core/state';
+import { cellCenter, cellKey } from '../sim/core/geometry';
+import type { Dir } from '../sim/core/geometry';
 
-export const START_FLOORS_OPEN = 3;
-export const GENERATED_FLOORS = 10;
-export const MAX_FLOORS = 20;
+interface RoomSpec {
+  types: string[];
+  damagedChance?: number;
+}
+interface TemplateBase {
+  id: string;
+  name: string;
+  levels: string[][];
+  rooms: Record<string, RoomSpec>;
+  shafts?: Record<string, { broken?: boolean; repairCost?: { item: string; qty: number }[] }>;
+}
+interface CoreTemplate extends TemplateBase {
+  ports: { at: number[]; dir: string }[];
+}
+interface SectionTemplate extends TemplateBase {
+  condition: Section['condition'];
+  seal: { kind: string; label: string; cost: { item: string; qty: number }[] };
+  attachLevels: number[];
+  entry: { at: number[]; dir: string };
+}
 
-/** Rooms every bunker starts with (operational), and those that start damaged. */
-const START_ROOMS: { type: RoomTypeId; width: number }[] = [
-  { type: 'geothermal', width: 1 },
-  { type: 'boiler', width: 1 },
-  { type: 'water_plant', width: 1 },
-  { type: 'scrubber', width: 1 },
-  { type: 'quarters', width: 2 },
-  { type: 'kitchen', width: 1 },
-  { type: 'storage', width: 1 },
-];
-const START_DAMAGED: RoomTypeId[] = ['hydroponics', 'workshop'];
-const DEEP_ROOM_POOL: RoomTypeId[] = [
-  'radio',
-  'lab',
-  'medbay',
-  'common',
-  'hydroponics',
-  'workshop',
-  'storage',
-];
+const CORE = sectionsJson.core as unknown as CoreTemplate;
+const SECTIONS = sectionsJson.sections as unknown as SectionTemplate[];
+
+const DIR_VEC: Record<Dir, [number, number]> = { '+x': [1, 0], '-x': [-1, 0], '+z': [0, 1], '-z': [0, -1] };
+const ROT_ORDER: Dir[] = ['+x', '+z', '-x', '-z'];
+const rotDir = (d: Dir, r: number): Dir => ROT_ORDER[(ROT_ORDER.indexOf(d) + r) % 4]!;
+const opposite = (d: Dir): Dir => rotDir(d, 2);
+/** Rotate (x,z) by r quarter turns (+x -> +z). */
+function rot(x: number, z: number, r: number): [number, number] {
+  let a = x;
+  let b = z;
+  for (let i = 0; i < r; i++) [a, b] = [-b, a];
+  return [a, b];
+}
+
+interface Placed {
+  /** Absolute grid position for every template cell: char + coords. */
+  cells: { ch: string; x: number; y: number; z: number }[];
+}
+
+/** Absolute cells of a template placed with rotation r and offset (ox, oy, oz) for its origin. */
+function place(t: TemplateBase, r: number, ox: number, oy: number, oz: number): Placed {
+  const cells: Placed['cells'] = [];
+  t.levels.forEach((rows, ly) =>
+    rows.forEach((row, lz) =>
+      [...row].forEach((ch, lx) => {
+        if (ch === '.') return;
+        const [rx, rz] = rot(lx, lz, r);
+        cells.push({ ch, x: ox + rx, y: oy + ly, z: oz + rz });
+      }),
+    ),
+  );
+  return { cells };
+}
 
 export function generateBunker(seed: string, defs: Defs): SimState {
   const rng = Rng.stream(seed, 'layout');
-  const lootRng = Rng.stream(seed, 'loot');
   let nextId = 1;
-  const slots: Slot[] = [];
+  const cells: Cell[] = [];
+  const links: Link[] = [];
+  const shafts: Shaft[] = [];
+  const sections: Section[] = [];
   const rooms: Room[] = [];
+  const occupied = new Map<string, Cell>();
+  const ports: { x: number; y: number; z: number; dir: Dir; used: boolean }[] = [];
 
-  const floors = Array.from({ length: MAX_FLOORS }, (_, i) => ({
-    index: i,
-    state:
-      i < START_FLOORS_OPEN
-        ? ('open' as const)
-        : i < GENERATED_FLOORS
-          ? ('sealed' as const)
-          : ('unexcavated' as const),
-  }));
-
-  // Create all slots.
-  const slotAt = new Map<string, Slot>();
-  for (let f = 0; f < MAX_FLOORS; f++)
-    for (const side of [-1, 1] as Side[])
-      for (let i = 0; i < GEO.cellsPerSide; i++) {
-        const s: Slot = { id: nextId++, floor: f, side, index: i, state: 'rock', roomId: null };
-        slots.push(s);
-        slotAt.set(`${f}:${side}:${i}`, s);
+  /** Materialise a placed template: cells, rooms, shafts, internal doors. */
+  const build = (
+    t: TemplateBase,
+    placed: Placed,
+    section: Section,
+    extraCorridors: { x: number; y: number; z: number }[],
+  ) => {
+    const letterRoom = new Map<string, Room>();
+    const local: Cell[] = [];
+    const shaftCols = new Map<string, Cell[]>();
+    for (const pc of [...extraCorridors.map((c) => ({ ...c, ch: '#' })), ...placed.cells]) {
+      const kind =
+        pc.ch === '#' || pc.ch === '+' ? 'corridor' : pc.ch === 'E' || pc.ch === 'L' ? 'shaft' : 'room';
+      const cell: Cell = {
+        id: nextId++,
+        x: pc.x,
+        y: pc.y,
+        z: pc.z,
+        kind,
+        roomId: null,
+        shaftId: null,
+        sectionId: section.id,
+      };
+      if (kind === 'room') {
+        let room = letterRoom.get(pc.ch);
+        if (!room) {
+          const spec = t.rooms[pc.ch];
+          if (!spec) throw new Error(`template ${t.id}: no room spec for ${pc.ch}`);
+          const type = spec.types[rng.int(0, spec.types.length - 1)]!;
+          const def = defs.rooms[type];
+          if (!def) throw new Error(`template ${t.id}: unknown room type ${type}`);
+          room = {
+            id: nextId++,
+            type,
+            tier: 1,
+            cellIds: [],
+            sectionId: section.id,
+            damaged: rng.next() < (spec.damagedChance ?? 0),
+            enabled: true,
+            priority: def.priority,
+            temp: 12,
+            powered: 1,
+            progress: def.tiers[0].effects.map(() => 0),
+            workers: [],
+          };
+          letterRoom.set(pc.ch, room);
+          rooms.push(room);
+        }
+        room.cellIds.push(cell.id);
+        cell.roomId = room.id;
       }
-  const slot = (f: number, side: Side, i: number) => slotAt.get(`${f}:${side}:${i}`)!;
+      if (kind === 'shaft') {
+        const key = `${pc.ch}:${pc.x},${pc.z}`;
+        if (!shaftCols.has(key)) shaftCols.set(key, []);
+        shaftCols.get(key)!.push(cell);
+      }
+      cells.push(cell);
+      local.push(cell);
+      occupied.set(cellKey(cell.x, cell.y, cell.z), cell);
+    }
+    for (const [key, col] of shaftCols) {
+      const ch = key[0]!;
+      const cfg = t.shafts?.[ch] ?? {};
+      const ys = col.map((c) => c.y);
+      const shaft: Shaft = {
+        id: nextId++,
+        kind: ch === 'E' ? 'elevator' : 'ladder',
+        x: col[0]!.x,
+        z: col[0]!.z,
+        top: Math.min(...ys),
+        bottom: Math.max(...ys),
+        broken: cfg.broken ?? false,
+        repairCost: cfg.repairCost ?? [],
+      };
+      shafts.push(shaft);
+      for (const c of col) c.shaftId = shaft.id;
+    }
+    // Internal doors: every horizontal neighbour pair inside this section, except the inside of a
+    // room, and except the upper part of a tall room (it has no floor at that level).
+    const lowest = new Map<number, number>();
+    for (const r of letterRoom.values())
+      lowest.set(r.id, Math.max(...r.cellIds.map((id) => local.find((c) => c.id === id)!.y)));
+    const enterable = (c: Cell) => c.roomId === null || lowest.get(c.roomId) === c.y;
+    for (const a of local)
+      for (const [dx, dz] of [
+        [1, 0],
+        [0, 1],
+      ] as const) {
+        const b = occupied.get(cellKey(a.x + dx, a.y, a.z + dz));
+        if (!b || b.sectionId !== section.id) continue;
+        if (a.roomId !== null && a.roomId === b.roomId) continue;
+        if (!enterable(a) || !enterable(b)) continue;
+        links.push({ id: nextId++, a: a.id, b: b.id, kind: 'door', sealed: false });
+      }
+  };
 
-  const makeRoom = (type: RoomTypeId, slotList: Slot[], damaged: boolean): Room => {
-    const def = defs.rooms[type];
-    if (!def) throw new Error(`unknown room ${type}`);
-    const room: Room = {
+  // --- Core ---
+  const core: Section = { id: nextId++, template: 'core', name: CORE.name, open: true, condition: 'ok' };
+  sections.push(core);
+  build(CORE, place(CORE, 0, 0, 0, 0), core, []);
+  for (const p of CORE.ports)
+    ports.push({ x: p.at[0]!, y: p.at[1]!, z: p.at[2]!, dir: p.dir as Dir, used: false });
+
+  // --- Sections: seeded backtracking over (section -> free port, tunnel length). Every section
+  // must be placed; the most constrained sections are tried first, ties in seeded order. ---
+  interface Plan {
+    t: SectionTemplate;
+    port: (typeof ports)[number];
+    tunnel: { x: number; y: number; z: number }[];
+    placed: Placed;
+  }
+  const options = (t: SectionTemplate, occ: Set<string>, used: Set<number>): Plan[] => {
+    const out: Plan[] = [];
+    const pIdx = shuffle(
+      rng,
+      ports.map((_, i) => i).filter((i) => !used.has(i) && t.attachLevels.includes(ports[i]!.y)),
+    );
+    for (const pi of pIdx) {
+      const port = ports[pi]!;
+      for (const tunnel of shuffle(rng, [0, 1, 2])) {
+        const [dx, dz] = DIR_VEC[port.dir];
+        const tunnelCells = Array.from({ length: tunnel }, (_, i) => ({
+          x: port.x + dx * (i + 1),
+          y: port.y,
+          z: port.z + dz * (i + 1),
+        }));
+        const want = opposite(port.dir);
+        const r = (ROT_ORDER.indexOf(want) - ROT_ORDER.indexOf(t.entry.dir as Dir) + 4) % 4;
+        const [ex, ez] = rot(t.entry.at[0]!, t.entry.at[2]!, r);
+        const target = { x: port.x + dx * (tunnel + 1), y: port.y, z: port.z + dz * (tunnel + 1) };
+        const placed = place(t, r, target.x - ex, target.y - t.entry.at[1]!, target.z - ez);
+        const all = [...tunnelCells, ...placed.cells];
+        if (all.some((c) => occ.has(cellKey(c.x, c.y, c.z)) || c.y < 0)) continue;
+        out.push({ t, port: Object.assign(port, { index: pi }), tunnel: tunnelCells, placed });
+      }
+    }
+    return out;
+  };
+  const occ0 = new Set(occupied.keys());
+  const pending = shuffle(rng, SECTIONS.slice()).sort(
+    (a, b) =>
+      ports.filter((p) => a.attachLevels.includes(p.y)).length -
+      ports.filter((p) => b.attachLevels.includes(p.y)).length,
+  );
+  const solve = (i: number, occ: Set<string>, used: Set<number>): Plan[] | null => {
+    if (i === pending.length) return [];
+    for (const plan of options(pending[i]!, occ, used)) {
+      const occ2 = new Set(occ);
+      for (const c of [...plan.tunnel, ...plan.placed.cells]) occ2.add(cellKey(c.x, c.y, c.z));
+      const used2 = new Set(used).add((plan.port as { index?: number }).index!);
+      const rest = solve(i + 1, occ2, used2);
+      if (rest) return [plan, ...rest];
+    }
+    return null;
+  };
+  const plans = solve(0, occ0, new Set()) ?? [];
+  for (const plan of plans) {
+    const { t, port } = plan;
+    const [dx, dz] = DIR_VEC[port.dir];
+    const section: Section = {
       id: nextId++,
-      type,
-      tier: 1,
-      slotIds: slotList.map((s) => s.id),
-      damaged,
-      enabled: true,
-      priority: def.priority,
-      temp: 12,
-      powered: 1,
-      progress: def.tiers[0].effects.map(() => 0),
-      workers: [],
+      template: t.id,
+      name: t.name,
+      open: false,
+      condition: t.condition,
     };
-    for (const s of slotList) {
-      s.state = 'room';
-      s.roomId = room.id;
-    }
-    rooms.push(room);
-    return room;
-  };
-
-  // --- Open floors: decide per side how many cells are open (rest sealed/rock). ---
-  // Floor 0 and 1: all 4 cells excavated on both sides; floor 2: 2-4 open cells per side.
-  const openCount = new Map<string, number>();
-  for (let f = 0; f < START_FLOORS_OPEN; f++)
-    for (const side of [-1, 1] as Side[]) openCount.set(`${f}:${side}`, f < 2 ? 4 : rng.int(2, 4));
-
-  // Free open cells as a shuffled list of runs we can place rooms into.
-  type Cell = { f: number; side: Side; i: number };
-  const freeCells: Cell[] = [];
-  for (let f = 0; f < START_FLOORS_OPEN; f++)
-    for (const side of [-1, 1] as Side[]) {
-      const n = openCount.get(`${f}:${side}`)!;
-      for (let i = 0; i < n; i++) {
-        slot(f, side, i).state = 'empty';
-        freeCells.push({ f, side, i });
-      }
-    }
-
-  // Airlock: floor 0, outermost cell of a random side (always sealed; the mystery hatch).
-  const airSide: Side = rng.next() < 0.5 ? -1 : 1;
-  const airSlot = slot(0, airSide, GEO.cellsPerSide - 1);
-  airSlot.state = 'sealed';
-  airSlot.seal = { kind: 'keycard', cost: [], hiddenRoom: 'airlock' };
-  removeCell(freeCells, 0, airSide, GEO.cellsPerSide - 1);
-
-  const isFree = (f: number, side: Side, i: number) =>
-    freeCells.some((c) => c.f === f && c.side === side && c.i === i);
-  const place = (type: RoomTypeId, width: number, damaged: boolean, floorFilter: (f: number) => boolean) => {
-    // Candidate starts where `width` consecutive free cells exist on one side of one floor.
-    const cands: Cell[] = [];
-    for (const c of freeCells) {
-      if (!floorFilter(c.f)) continue;
-      let ok = true;
-      for (let k = 0; k < width; k++) if (!isFree(c.f, c.side, c.i + k)) ok = false;
-      if (ok) cands.push(c);
-    }
-    if (cands.length === 0) return false;
-    const c = cands[rng.int(0, cands.length - 1)]!;
-    const list: Slot[] = [];
-    for (let k = 0; k < width; k++) {
-      list.push(slot(c.f, c.side, c.i + k));
-      removeCell(freeCells, c.f, c.side, c.i + k);
-    }
-    makeRoom(type, list, damaged);
-    return true;
-  };
-
-  // Starting rooms on floors 0-1 (critical ones on floor 0 preferred).
-  for (const r of START_ROOMS) {
-    if (!place(r.type, r.width, false, (f) => f <= 1)) place(r.type, 1, false, () => true);
+    sections.push(section);
+    build(t, plan.placed, section, plan.tunnel);
+    port.used = true;
+    // Bulkhead across the seam between the parent port cell and the first section cell.
+    const parentCell = occupied.get(cellKey(port.x, port.y, port.z))!;
+    const first = occupied.get(cellKey(port.x + dx, port.y, port.z + dz))!;
+    links.push({
+      id: nextId++,
+      a: parentCell.id,
+      b: first.id,
+      kind: 'bulkhead',
+      sealed: true,
+      seal: { kind: t.seal.kind as SealKind, label: t.seal.label, cost: t.seal.cost },
+    });
   }
-  for (const t of START_DAMAGED) place(t, 1, true, (f) => f >= 1);
-  // A couple of damaged extras deeper.
-  const extras = rng.int(1, 2);
-  for (let k = 0; k < extras; k++)
-    place(DEEP_ROOM_POOL[rng.int(0, DEEP_ROOM_POOL.length - 1)]!, 1, true, (f) => f >= 1);
-
-  // Floor 2 sides: beyond open cells, up to 1 sealed cell then rock.
-  for (const side of [-1, 1] as Side[]) {
-    const n = openCount.get(`2:${side}`)!;
-    if (n < GEO.cellsPerSide) {
-      sealSlot(slot(2, side, n), pickSeal(rng), lootRng, defs, rng);
-      for (let i = n + 1; i < GEO.cellsPerSide; i++) slot(2, side, i).state = 'rock';
-    }
-  }
-
-  // Sealed floors 3..9: the whole floor is behind a sealed landing; cells inside are a mix.
-  for (let f = START_FLOORS_OPEN; f < GENERATED_FLOORS; f++)
-    for (const side of [-1, 1] as Side[]) {
-      const n = rng.int(1, GEO.cellsPerSide);
-      for (let i = 0; i < GEO.cellsPerSide; i++) {
-        const s = slot(f, side, i);
-        if (i >= n) s.state = 'rock';
-        else sealSlot(s, pickSeal(rng), lootRng, defs, rng);
-      }
-    }
-  // Floors >= 10 remain rock (excavation, Phase 2).
 
   const survivors = rollSurvivors(seed, defs, () => nextId++);
+  // Spawn in core corridor cells on level 0.
+  const spawn = cells.filter((c) => c.sectionId === core.id && c.kind === 'corridor' && c.y === 0);
+  survivors.forEach((s, i) => {
+    const c = spawn[i % spawn.length]!;
+    const p = cellCenter(c);
+    s.level = 0;
+    s.x = p.x + ((i % 2) - 0.5) * 1.2;
+    s.z = p.z + (i > 1 ? 1 : -1) * 0.8;
+  });
+
   const store: Record<string, number> = {};
   for (const s of defs.balance.startingStore) store[s.item] = (store[s.item] ?? 0) + s.qty;
-
-  // Survivors start in the floor-0 landing area.
-  survivors.forEach((s, i) => {
-    s.floor = 0;
-    s.x = -1.2 + i * 0.8;
-    s.z = -2.5;
-  });
+  const elevators = shafts
+    .filter((s) => s.kind === 'elevator')
+    .map((s) => ({ shaftId: s.id, pos: s.top, target: null, queue: [], doorTicks: 0, riders: [] }));
 
   return {
     schemaVersion: SAVE_SCHEMA_VERSION,
     seed,
     tick: 0,
     nextId,
-    floors,
-    slots,
+    cells,
+    links,
+    shafts,
+    sections,
     rooms,
     survivors,
-    elevator: { pos: 0, target: null, queue: [], doorTicks: 0, riders: [] },
+    elevators,
     store,
     power: { produced: 0, demand: 0, shedFrom: 5 },
     co2: defs.balance.co2Ambient,
@@ -196,29 +304,16 @@ export function generateBunker(seed: string, defs: Defs): SimState {
   };
 }
 
-function removeCell(list: { f: number; side: Side; i: number }[], f: number, side: Side, i: number) {
-  const k = list.findIndex((c) => c.f === f && c.side === side && c.i === i);
-  if (k >= 0) list.splice(k, 1);
+function shuffle<T>(rng: Rng, arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = rng.int(0, i);
+    [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+  }
+  return arr;
 }
 
-function pickSeal(rng: Rng): SealKind {
-  const r = rng.next();
-  return r < 0.45 ? 'repair' : r < 0.85 ? 'power' : 'keycard';
-}
-
-function sealSlot(s: Slot, kind: SealKind, lootRng: Rng, defs: Defs, rng: Rng) {
-  s.state = 'sealed';
-  const cost =
-    kind === 'repair'
-      ? [{ item: 'parts', qty: rng.int(3, 8) }]
-      : kind === 'power'
-        ? [{ item: 'scrap', qty: rng.int(5, 15) }]
-        : [];
-  const hidden = rng.next() < 0.35 ? DEEP_ROOM_POOL[rng.int(0, DEEP_ROOM_POOL.length - 1)] : undefined;
-  const lootItems = ['scrap', 'parts', 'filter', 'ration', 'medkit'].filter((id) => defs.items[id]);
-  const loot = [{ item: lootItems[lootRng.int(0, lootItems.length - 1)]!, qty: lootRng.int(2, 12) }];
-  s.seal = hidden ? { kind, cost, hiddenRoom: hidden, loot } : { kind, cost, loot };
-}
+/** The section templates (for tests/tools). */
+export const SECTION_IDS = SECTIONS.map((s) => s.id);
 
 /** Seeded survivor stat rolls from the templates. */
 export function rollSurvivors(seed: string, defs: Defs, nextId: () => number): Survivor[] {
@@ -254,7 +349,7 @@ export function rollSurvivors(seed: string, defs: Defs, nextId: () => number): S
       needs,
       health: 100,
       stress: 10,
-      floor: 0,
+      level: 0,
       x: 0,
       z: 0,
       heading: 0,
@@ -264,6 +359,9 @@ export function rollSurvivors(seed: string, defs: Defs, nextId: () => number): S
       actionSince: 0,
       path: [],
       elevator: 'none',
+      elevatorId: null,
     };
   });
 }
+
+export type { RoomTypeId };

@@ -1,20 +1,21 @@
 /**
  * Survivors (Phase 1 slice): needs decay, a simple utility chooser (re-decides at 2 Hz with
- * inertia), movement along the floor aisle, elevator use. Full utility AI, moods and relationships
+ * inertia), movement over the cell navigation graph, elevators and ladders. Full utility AI, moods and relationships
  * come in Phase 2 (same data shapes).
  */
 import { AI_INTERVAL_TICKS, DT_HOURS, TICKS_PER_GAME_HOUR, clockOf } from '../core/time';
-import { AISLE_Z, ELEVATOR_DOOR, LANDING, cellCenterX, cellsXRange, floorY } from '../core/geometry';
-import type { Room, Survivor } from '../core/state';
+import { cellCenter, floorY } from '../core/geometry';
+import type { Room, Survivor, Waypoint } from '../core/state';
 import { GEO } from '../core/state';
+import { cellOfPoint, findPath, reachableFrom } from './nav';
 import { has, take } from '../core/store';
 import type { World } from '../core/world';
 import { isInRoom } from './rooms';
 
 /** Metres per tick (0.1 s real at x1 = brisk walk 1.3 m/s on screen). */
 export const WALK_PER_TICK = 0.13;
-/** Elevator speed in floors per tick (2.4 m/s). */
-export const ELEVATOR_PER_TICK = 0.24 / GEO.floorPitch;
+/** Elevator speed in levels per tick (2.4 m/s). */
+export const ELEVATOR_PER_TICK = 0.24 / GEO.levelPitch;
 const DOOR_TICKS = 25;
 
 const clamp = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x);
@@ -23,30 +24,40 @@ export type ActionId = 'idle' | 'work' | 'eat' | 'drink' | 'sleep' | 'warm' | 'r
 
 /** Temperature the survivor currently feels. */
 export function feltTemp(w: World, s: Survivor): number {
-  for (const r of w.state.rooms) if (isInRoom(w, s, r)) return r.temp;
-  // Landing / shaft: average of rooms on that floor, a bit colder.
+  const c = cellOfPoint(w, s.level, s.x, s.z);
+  const r = c && w.room(c.roomId);
+  if (r) return r.temp;
+  // Corridors / shafts: average of open rooms in the same section, a bit colder.
   let sum = 0;
   let n = 0;
-  for (const r of w.state.rooms)
-    if (w.slot(r.slotIds[0]!)!.floor === s.floor) {
-      sum += r.temp;
+  for (const room of w.state.rooms)
+    if (c && room.sectionId === c.sectionId && !room.damaged) {
+      sum += room.temp;
       n++;
     }
   return n > 0 ? sum / n - 3 : w.state.outsideTemp + 15;
 }
 
-function roomsOfType(w: World, type: string): Room[] {
+/** Usable rooms of a type the survivor can actually reach. */
+function roomsOfType(w: World, type: string, reach: Set<number>): Room[] {
   return w.state.rooms.filter(
-    (r) => r.type === type && !r.damaged && w.state.floors[w.slot(r.slotIds[0]!)!.floor]?.state === 'open',
+    (r) => r.type === type && !r.damaged && w.roomOpen(r) && roomCellIn(w, r, reach) !== null,
   );
+}
+
+/** A walkable cell of the room that is in `reach`, or null. */
+function roomCellIn(w: World, r: Room, reach: Set<number>): number | null {
+  for (const id of r.cellIds) if (reach.has(id)) return id;
+  return null;
 }
 
 function nearestRoom(w: World, s: Survivor, rooms: Room[]): Room | undefined {
   let best: Room | undefined;
   let bestD = Infinity;
   for (const r of rooms) {
-    const sl = w.slot(r.slotIds[0]!)!;
-    const d = Math.abs(sl.floor - s.floor) * 20 + Math.abs(cellCenterX(sl.side, sl.index) - s.x);
+    const c = w.cell(r.cellIds[0]!)!;
+    const p = cellCenter(c);
+    const d = Math.abs(c.y - s.level) * 20 + Math.abs(p.x - s.x) + Math.abs(p.z - s.z);
     if (d < bestD) {
       bestD = d;
       best = r;
@@ -67,6 +78,7 @@ interface Candidate {
 }
 
 function decide(w: World, s: Survivor): Candidate {
+  const reach = reachableFrom(w, s.level, s.x, s.z);
   const n = s.needs;
   const hour = clockOf(w.state.tick).hour;
   const night = hour >= 22 || hour < 6;
@@ -75,24 +87,26 @@ function decide(w: World, s: Survivor): Candidate {
     return x * x;
   };
   const c: Candidate[] = [{ action: 'idle', target: undefined, score: 0.05 }];
-  const kitchen = nearestRoom(w, s, roomsOfType(w, 'kitchen'));
+  const kitchen = nearestRoom(w, s, roomsOfType(w, 'kitchen', reach));
   if (foodAvailable(w))
     c.push({ action: 'eat', target: kitchen, score: inv(n.hunger) * 1.3 + (n.hunger! < 25 ? 0.4 : 0) });
   if ((w.state.store.water ?? 0) >= 0.5) {
-    const tgt = kitchen ?? nearestRoom(w, s, roomsOfType(w, 'water_plant'));
+    const tgt = kitchen ?? nearestRoom(w, s, roomsOfType(w, 'water_plant', reach));
     c.push({ action: 'drink', target: tgt, score: inv(n.thirst) * 1.5 + (n.thirst! < 25 ? 0.5 : 0) });
   }
-  const beds = nearestRoom(w, s, roomsOfType(w, 'quarters'));
+  const beds = nearestRoom(w, s, roomsOfType(w, 'quarters', reach));
   c.push({ action: 'sleep', target: beds, score: inv(n.sleep) * 1.2 + (night && n.sleep! < 80 ? 0.3 : 0) });
   if (n.warmth! < 60) {
     let warmest: Room | undefined;
-    for (const r of w.state.rooms) if (!r.damaged && (!warmest || r.temp > warmest.temp)) warmest = r;
+    for (const r of w.state.rooms)
+      if (!r.damaged && roomCellIn(w, r, reach) !== null && (!warmest || r.temp > warmest.temp)) warmest = r;
     if (warmest && warmest.temp > feltTemp(w, s) + 2)
       c.push({ action: 'warm', target: warmest, score: inv(n.warmth) * 1.2 });
   }
   const assigned = w.room(s.assignedRoom);
-  if (assigned && !assigned.damaged) c.push({ action: 'work', target: assigned, score: night ? 0.12 : 0.42 });
-  const common = nearestRoom(w, s, roomsOfType(w, 'common'));
+  if (assigned && !assigned.damaged && roomCellIn(w, assigned, reach) !== null)
+    c.push({ action: 'work', target: assigned, score: night ? 0.12 : 0.42 });
+  const common = nearestRoom(w, s, roomsOfType(w, 'common', reach));
   if (common) {
     const m = Math.min(n.social ?? 100, n.purpose ?? 100);
     const x = 1 - m / 100;
@@ -121,33 +135,20 @@ function actionDone(s: Survivor): boolean {
   }
 }
 
-/** Spot inside a room for survivor k (spreads people out). */
-function spotIn(w: World, r: Room, k: number): { floor: number; x: number; z: number } {
-  const first = w.slot(r.slotIds[0]!)!;
-  const [x0, x1] = cellsXRange(
-    first.side,
-    r.slotIds.map((id) => w.slot(id)!.index),
-  );
-  const span = x1 - x0;
-  const fx = 0.25 + ((k * 0.37) % 0.5);
-  return { floor: first.floor, x: x0 + span * fx, z: 0.5 + ((k * 1.7) % 2.5) };
-}
-
-/** Builds a waypoint path from the survivor's position to a target spot. */
-export function planPath(s: Survivor, to: { floor: number; x: number; z: number }): Survivor['path'] {
-  const p: Survivor['path'] = [];
-  if (to.floor !== s.floor) {
-    p.push({ floor: s.floor, x: s.x, z: AISLE_Z });
-    p.push({ floor: s.floor, x: LANDING.x, z: AISLE_Z });
-    p.push({ floor: s.floor, x: ELEVATOR_DOOR.x, z: ELEVATOR_DOOR.z });
-    p.push({ floor: to.floor, x: ELEVATOR_DOOR.x, z: ELEVATOR_DOOR.z, via: 'elevator' });
-    p.push({ floor: to.floor, x: LANDING.x, z: AISLE_Z });
-  } else if (Math.abs(s.x - to.x) > 0.5) {
-    p.push({ floor: s.floor, x: s.x, z: AISLE_Z });
-  }
-  p.push({ floor: to.floor, x: to.x, z: AISLE_Z });
-  p.push(to);
-  return p;
+/** Spot inside a room for survivor k (spreads people out over its walkable cells). */
+function spotIn(
+  w: World,
+  r: Room,
+  k: number,
+  reach: Set<number>,
+): { cell: number; x: number; z: number } | null {
+  const cells = r.cellIds.filter((id) => reach.has(id));
+  if (cells.length === 0) return null;
+  const cell = w.cell(cells[k % cells.length]!)!;
+  const c = cellCenter(cell);
+  const ox = ((k * 37) % 5) * 0.6 - 1.2;
+  const oz = ((k * 53) % 3) * 0.9 - 0.4;
+  return { cell: cell.id, x: c.x + ox, z: c.z + oz };
 }
 
 export function stepSurvivors(w: World): void {
@@ -209,10 +210,15 @@ export function stepSurvivors(w: World): void {
         s.actionTarget = tid;
         s.actionSince = st.tick;
         const k = d.target ? Math.max(0, d.target.workers.indexOf(s.id)) + s.id : s.id;
-        const dest = d.target
-          ? spotIn(w, d.target, k)
-          : { floor: s.floor, x: s.x + ((s.id % 3) - 1) * 0.8, z: s.z };
-        s.path = planPath(s, dest);
+        const reach = reachableFrom(w, s.level, s.x, s.z);
+        const spot = d.target ? spotIn(w, d.target, k, reach) : null;
+        const here = cellOfPoint(w, s.level, s.x, s.z);
+        const path = spot
+          ? findPath(w, s, spot.cell, spot)
+          : here
+            ? findPath(w, s, here.id, { x: s.x + ((s.id % 3) - 1) * 0.6, z: s.z })
+            : null;
+        s.path = path ?? [];
       }
     }
 
@@ -265,15 +271,20 @@ function perform(w: World, s: Survivor): void {
   }
 }
 
+/** Ladder climb speed in levels per tick (0.06 m/tick on a 4 m pitch). */
+const CLIMB_PER_TICK = 0.06 / GEO.levelPitch;
+
 function moveAlongPath(w: World, s: Survivor): void {
-  const el = w.state.elevator;
   if (s.elevator === 'riding') {
+    const el = w.elevator(s.elevatorId!)!;
     const next = s.path[0];
-    s.floor = Math.round(el.pos);
-    if (next && el.doorTicks > 0 && Math.abs(el.pos - next.floor) < 1e-6) {
-      // Arrived: step out.
+    s.level = Math.round(el.pos);
+    if (next && el.doorTicks > 0 && Math.abs(el.pos - next.level) < 1e-6) {
       s.elevator = 'none';
-      s.floor = next.floor;
+      s.elevatorId = null;
+      s.level = next.level;
+      s.x = next.x;
+      s.z = next.z;
       el.riders = el.riders.filter((id) => id !== s.id);
       s.path.shift();
     }
@@ -281,20 +292,38 @@ function moveAlongPath(w: World, s: Survivor): void {
   }
   let budget = WALK_PER_TICK;
   while (budget > 0 && s.path.length > 0) {
-    const wp = s.path[0]!;
-    if (wp.via === 'elevator') {
-      // At the elevator door: wait for the car, board when doors are open here.
+    const wp: Waypoint = s.path[0]!;
+    if (wp.via?.kind === 'elevator') {
+      const el = w.elevator(wp.via.shaftId);
+      if (!el) {
+        s.path = [];
+        return;
+      }
       if (s.elevator === 'none') {
         s.elevator = 'waiting';
-        if (!el.queue.includes(s.floor)) el.queue.push(s.floor);
+        s.elevatorId = el.shaftId;
+        if (!el.queue.includes(s.level)) el.queue.push(s.level);
       }
-      if (s.elevator === 'waiting' && el.doorTicks > 0 && Math.abs(el.pos - s.floor) < 1e-6) {
+      if (s.elevator === 'waiting' && el.doorTicks > 0 && Math.abs(el.pos - s.level) < 1e-6) {
         s.elevator = 'riding';
         el.riders.push(s.id);
-        if (!el.queue.includes(wp.floor)) el.queue.push(wp.floor);
+        if (!el.queue.includes(wp.level)) el.queue.push(wp.level);
       }
       return;
     }
+    if (wp.via?.kind === 'ladder') {
+      // Climb smoothly: `climb` holds the fractional level while on the ladder.
+      const from = s.climb ?? s.level;
+      const dir = wp.level > from ? 1 : -1;
+      const next = from + dir * CLIMB_PER_TICK;
+      if ((dir > 0 && next >= wp.level) || (dir < 0 && next <= wp.level)) {
+        s.level = wp.level;
+        delete s.climb;
+        s.path.shift();
+      } else s.climb = next;
+      return;
+    }
+    s.level = wp.level;
     const dx = wp.x - s.x;
     const dz = wp.z - s.z;
     const d = Math.sqrt(dx * dx + dz * dz);
@@ -308,7 +337,7 @@ function moveAlongPath(w: World, s: Survivor): void {
       s.z += (dz / d) * budget;
       budget = 0;
     }
-    if (d > 1e-6) s.heading = dx === 0 && dz === 0 ? s.heading : headingOf(dx, dz);
+    if (d > 1e-6) s.heading = headingOf(dx, dz);
   }
 }
 
@@ -323,36 +352,38 @@ function headingOf(dx: number, dz: number): number {
   return dz > 0 ? -q : -3 * q;
 }
 
-export function stepElevator(w: World): void {
-  const el = w.state.elevator;
-  if (el.doorTicks > 0) {
-    el.doorTicks--;
-    return;
-  }
-  if (el.target === null) {
-    // Drop requests for the floor we are already at (open doors instead).
-    const here = el.queue.findIndex((f) => Math.abs(f - el.pos) < 1e-6);
-    if (here >= 0) {
-      el.queue.splice(here, 1);
-      el.doorTicks = DOOR_TICKS;
-      return;
+export function stepElevators(w: World): void {
+  for (const el of w.state.elevators) {
+    const shaft = w.shaft(el.shaftId);
+    if (!shaft || shaft.broken) continue;
+    if (el.doorTicks > 0) {
+      el.doorTicks--;
+      continue;
     }
-    const next = el.queue.shift();
-    if (next === undefined) return;
-    el.target = next;
+    if (el.target === null) {
+      const here = el.queue.findIndex((f) => Math.abs(f - el.pos) < 1e-6);
+      if (here >= 0) {
+        el.queue.splice(here, 1);
+        el.doorTicks = DOOR_TICKS;
+        continue;
+      }
+      const next = el.queue.shift();
+      if (next === undefined) continue;
+      el.target = Math.max(shaft.top, Math.min(shaft.bottom, next));
+    }
+    const dir = el.target > el.pos ? 1 : -1;
+    const remaining = Math.abs(el.target - el.pos);
+    if (remaining <= ELEVATOR_PER_TICK) {
+      el.pos = el.target;
+      el.target = null;
+      el.doorTicks = DOOR_TICKS;
+      el.queue = el.queue.filter((f) => f !== el.pos);
+    } else el.pos += dir * ELEVATOR_PER_TICK;
   }
-  const dir = el.target > el.pos ? 1 : -1;
-  const remaining = Math.abs(el.target - el.pos);
-  if (remaining <= ELEVATOR_PER_TICK) {
-    el.pos = el.target;
-    el.target = null;
-    el.doorTicks = DOOR_TICKS;
-    // Also remove duplicate requests for this floor.
-    el.queue = el.queue.filter((f) => f !== el.pos);
-  } else el.pos += dir * ELEVATOR_PER_TICK;
 }
 
 /** World-space y for a survivor (riding survivors follow the car). Render helper. */
 export function survivorY(w: World, s: Survivor): number {
-  return s.elevator === 'riding' ? floorY(w.state.elevator.pos) : floorY(s.floor);
+  if (s.elevator === 'riding') return floorY(w.elevator(s.elevatorId!)!.pos);
+  return floorY(s.climb ?? s.level);
 }

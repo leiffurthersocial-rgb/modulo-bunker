@@ -49,37 +49,38 @@ describe('survivor utility AI', () => {
     expect(s.action).not.toBe('drink');
   });
 
-  it('reaches an assigned room on every open floor (elevator pathing) and works there', () => {
+  it('reaches assigned rooms on every core level (corridors, ladder, elevator) and works there', () => {
     const w0 = newWorld(SEED);
-    const floors = [...new Set(w0.state.rooms.map((r) => w0.slot(r.slotIds[0]!)!.floor))];
-    expect(floors.length).toBeGreaterThan(1);
-    for (const f of floors) {
+    const workRooms = w0.state.rooms.filter((r) => {
+      const def = w0.defs.rooms[r.type]!;
+      return !r.damaged && w0.roomOpen(r) && def.tiers[r.tier - 1]!.workersPerCell > 0;
+    });
+    const levels = new Set(workRooms.map((r) => Math.max(...r.cellIds.map((id) => w0.cell(id)!.y))));
+    expect(levels.size).toBeGreaterThan(1);
+    for (const target of workRooms) {
       const w = newWorld(SEED);
       fill(w);
-      const room = w.state.rooms.find((r) => {
-        const def = w.defs.rooms[r.type]!;
-        return !r.damaged && w.slot(r.slotIds[0]!)!.floor === f && def.tiers[r.tier - 1]!.workersPerCell > 0;
-      });
-      if (!room) continue;
+      const room = w.room(target.id)!;
       const s = w.state.survivors[0]!;
       expect(applyCommand(w, { type: 'assign', survivorId: s.id, roomId: room.id }).ok).toBe(true);
-      // Keep needs topped up so only "work" matters; daytime start (tick 0 = 00:00 -> skip to 08:00).
-      w.state.tick = 8 * 600;
+      w.state.tick = 8 * 600; // daytime
       const used = until(
         w,
         () => {
           fill(w);
           return s.action === 'work' && s.path.length === 0 && isInRoom(w, s, room);
         },
-        4000,
+        5000,
       );
-      expect(used, `floor ${f} room ${room.type}`).toBeGreaterThanOrEqual(0);
+      expect(used, `room ${room.type}`).toBeGreaterThanOrEqual(0);
     }
   });
 
-  it('elevator refuses sealed floors', () => {
+  it('elevator refuses levels outside its shaft and broken shafts', () => {
     const w = newWorld(SEED);
-    const sealed = w.state.floors.find((f) => f.state === 'sealed')!;
-    expect(applyCommand(w, { type: 'callElevator', floor: sealed.index }).ok).toBe(false);
+    const sh = w.state.shafts.find((x) => x.kind === 'elevator')!;
+    expect(applyCommand(w, { type: 'callElevator', shaftId: sh.id, level: sh.bottom + 1 }).ok).toBe(false);
+    sh.broken = true;
+    expect(applyCommand(w, { type: 'callElevator', shaftId: sh.id, level: sh.top }).ok).toBe(false);
   });
 });

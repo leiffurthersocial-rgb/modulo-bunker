@@ -16,7 +16,7 @@ for (let d = 0; d < days; d++) {
   run(w, TICKS_PER_GAME_DAY);
   const ms = (performance.now() - t0) / TICKS_PER_GAME_DAY;
   const st = w.state;
-  const temps = st.rooms.map((r) => r.temp);
+  const temps = st.rooms.filter((r) => w.roomOpen(r)).map((r) => r.temp);
   console.log(
     `${formatClock(st.tick)} | power ${fmt(st.power.produced)}/${fmt(st.power.demand)} kW shed>=${st.power.shedFrom}` +
       ` | temp ${fmt(Math.min(...temps))}..${fmt(Math.max(...temps))} out ${fmt(st.outsideTemp)}` +

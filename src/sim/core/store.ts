@@ -1,14 +1,15 @@
 import type { ItemStack } from '../../data/types';
 import type { World } from './world';
+import { sizeBonus } from '../systems/rooms';
 
 /** Bunker store helpers. Quantities are floats; never negative. */
 export function storeCapacity(w: World): number {
   let cap = w.defs.balance.baseStorage;
   for (const r of w.state.rooms) {
-    if (r.damaged) continue;
+    if (r.damaged || !w.roomOpen(r)) continue;
     const def = w.defs.rooms[r.type]!;
     for (const e of def.tiers[r.tier - 1]!.effects)
-      if (e.type === 'storage') cap += e.capacity * r.slotIds.length * def.mergeBonus[r.slotIds.length - 1]!;
+      if (e.type === 'storage') cap += e.capacity * sizeBonus(def, r.cellIds.length);
   }
   return cap;
 }

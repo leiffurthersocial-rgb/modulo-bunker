@@ -4,7 +4,7 @@
  */
 import type { RoomDef, RoomEffect, RoomTierDef } from '../../data/types';
 import { DT_HOURS, GAME_SECONDS_PER_TICK, TICKS_PER_GAME_DAY } from '../core/time';
-import { cellsXRange } from '../core/geometry';
+import { cellOfPoint } from './nav';
 import type { Room, Survivor } from '../core/state';
 import { give, has, take } from '../core/store';
 import type { World } from '../core/world';
@@ -25,27 +25,30 @@ export interface RoomInfo {
 export function roomInfo(w: World, r: Room): RoomInfo {
   const def = w.defs.rooms[r.type]!;
   const tier = def.tiers[r.tier - 1]!;
-  const cells = r.slotIds.length;
+  const cells = r.cellIds.length;
   return {
     def,
     tier,
     cells,
-    merge: def.mergeBonus[cells - 1] ?? cells,
+    merge: sizeBonus(def, cells),
     staffing: staffingOf(w, r, def, tier, cells),
-    active: !r.damaged && r.enabled,
+    active: !r.damaged && r.enabled && w.roomOpen(r),
   };
+}
+
+/**
+ * Size multiplier for production. Rooms come pre-built in 1..4+ cells; bigger halls are more
+ * efficient per cell (data: mergeBonus for 1..3 cells, extrapolated linearly beyond).
+ */
+export function sizeBonus(def: RoomDef, cells: number): number {
+  return cells <= 3 ? def.mergeBonus[cells - 1]! : (def.mergeBonus[2] * cells) / 3;
 }
 
 /** True if the survivor is physically inside the room. */
 export function isInRoom(w: World, s: Survivor, r: Room): boolean {
-  if (s.elevator === 'riding') return false;
-  const first = w.slot(r.slotIds[0]!)!;
-  if (s.floor !== first.floor) return false;
-  const [x0, x1] = cellsXRange(
-    first.side,
-    r.slotIds.map((id) => w.slot(id)!.index),
-  );
-  return s.x >= x0 && s.x <= x1;
+  if (s.elevator === 'riding' || s.climb !== undefined) return false;
+  const c = cellOfPoint(w, s.level, s.x, s.z);
+  return !!c && c.roomId === r.id;
 }
 
 function staffingOf(w: World, r: Room, def: RoomDef, tier: RoomTierDef, cells: number): number {
@@ -81,7 +84,7 @@ export function stepPower(w: World): void {
       continue;
     }
     for (const e of info.tier.effects)
-      if (e.type === 'power') produced += e.kw * info.cells * info.merge * staffScale(e, info);
+      if (e.type === 'power') produced += e.kw * info.merge * staffScale(e, info);
     let d = (info.tier.powerDraw + w.defs.balance.baseCellDraw) * info.cells;
     for (const m of st.machines) if (m.roomId === r.id && m.enabled) d += w.defs.machines[m.type]!.powerDraw;
     draws.set(r.id, d);
@@ -130,7 +133,7 @@ export function stepProduction(w: World): void {
     info.tier.effects.forEach((e, i) => {
       const s = staffScale(e, info) * r.powered;
       if (e.type === 'process') {
-        const rate = e.perHour * info.cells * info.merge * s * tempFactor(r, info.def);
+        const rate = e.perHour * info.merge * s * tempFactor(r, info.def);
         let p = (r.progress[i] ?? 0) + rate * DT_HOURS;
         while (p >= 1) {
           if (!has(w, e.inputs)) {
@@ -148,13 +151,13 @@ export function stepProduction(w: World): void {
           const need = e.consumes.map((c) => ({ item: c.item, qty: c.qty * info.cells * DT_HOURS * s }));
           eff = take(w, need) ? 1 : 0.25;
         }
-        scrubCap += e.perHour * info.cells * info.merge * s * eff * DT_HOURS;
+        scrubCap += e.perHour * info.merge * s * eff * DT_HOURS;
       }
     });
   }
   // Air: CO2 accumulates from people, normalized by open air volume (in cells).
   const b = w.defs.balance;
-  const cells = st.rooms.reduce((n, r) => n + r.slotIds.length, 0) + 2;
+  const cells = st.cells.filter((c) => w.cellOpen(c)).length;
   const people = st.survivors.length + 1; // + the player
   st.co2 += (people * b.co2PerPersonHour * DT_HOURS) / cells;
   st.co2 -= scrubCap / cells;
@@ -173,13 +176,14 @@ export function stepHeat(w: World): void {
     const info = infos[k]!;
     if (!info.active || r.powered <= 0) return;
     for (const e of info.tier.effects)
-      if (e.type === 'heatSupply') supply += e.kw * info.cells * info.merge * staffScale(e, info) * r.powered;
+      if (e.type === 'heatSupply') supply += e.kw * info.merge * staffScale(e, info) * r.powered;
   });
   // Demand: kW to cover leak + close the comfort gap over ~1 game hour.
   const demand = st.rooms.map((r, k) => {
     const info = infos[k]!;
     const C = b.cellHeatCapacity * info.cells;
     const leak = b.cellLeakKwPerC * info.cells * (r.temp - st.outsideTemp);
+    if (!w.roomOpen(r)) return 0;
     return Math.max(0, ((b.comfortTemp - r.temp) * C) / 3600 + leak);
   });
   const totalDemand = demand.reduce((a, x) => a + x, 0);

@@ -1,0 +1,121 @@
+{
+  "legend": {
+    ".": "rock",
+    "#": "corridor",
+    "+": "port corridor (sections attach here)",
+    "E": "elevator shaft",
+    "L": "ladder shaft",
+    "A-Z (except E, L)": "room cells; the same letter = the same room; the same letter on two levels = a tall room entered from its lowest level"
+  },
+  "core": {
+    "id": "core",
+    "name": "Core",
+    "levels": [
+      [".QQL..", "K###E+", "KW#S..", "..+..."],
+      [".GGL..", "X###E.", ".B#C..", "..+..."],
+      [".GGL..", "...#E.", "...+..", "......"],
+      ["......", "...+E.", "......", "......"]
+    ],
+    "rooms": {
+      "Q": { "types": ["quarters"] },
+      "K": { "types": ["kitchen"] },
+      "W": { "types": ["water_plant"] },
+      "S": { "types": ["storage"], "damagedChance": 0.5 },
+      "G": { "types": ["geothermal"] },
+      "X": { "types": ["empty"] },
+      "B": { "types": ["boiler"] },
+      "C": { "types": ["scrubber"], "damagedChance": 0.3 }
+    },
+    "ports": [
+      { "at": [2, 0, 3], "dir": "+z" },
+      { "at": [5, 0, 1], "dir": "+x" },
+      { "at": [2, 1, 3], "dir": "+z" },
+      { "at": [3, 2, 2], "dir": "+z" },
+      { "at": [3, 3, 1], "dir": "-x" }
+    ]
+  },
+  "sections": [
+    {
+      "id": "greenhouse",
+      "name": "Greenhouse wing",
+      "condition": "frozen",
+      "seal": { "kind": "thaw", "label": "Frozen shut: needs 30 kW of heating", "cost": [] },
+      "attachLevels": [0, 1],
+      "levels": [["+#HH", "..HH", "..P."]],
+      "rooms": {
+        "H": { "types": ["hydroponics"], "damagedChance": 0.6 },
+        "P": { "types": ["storage", "water_plant"], "damagedChance": 0.5 }
+      },
+      "entry": { "at": [0, 0, 0], "dir": "-x" }
+    },
+    {
+      "id": "workshop",
+      "name": "Workshop annex",
+      "condition": "collapsed",
+      "seal": {
+        "kind": "repair",
+        "label": "Collapsed tunnel: clear the rubble",
+        "cost": [
+          { "item": "parts", "qty": 6 },
+          { "item": "scrap", "qty": 15 }
+        ]
+      },
+      "attachLevels": [0, 1],
+      "levels": [["+..", "#..", "#WW", "#R."]],
+      "rooms": {
+        "W": { "types": ["workshop"], "damagedChance": 0.5 },
+        "R": { "types": ["common", "storage"], "damagedChance": 0.5 }
+      },
+      "entry": { "at": [0, 0, 0], "dir": "-z" }
+    },
+    {
+      "id": "research",
+      "name": "Research annex",
+      "condition": "dark",
+      "seal": {
+        "kind": "power",
+        "label": "Dead bulkhead: needs 10 kW spare power",
+        "cost": [{ "item": "parts", "qty": 3 }]
+      },
+      "attachLevels": [1, 2],
+      "levels": [["+##A", ".M#B"]],
+      "rooms": {
+        "A": { "types": ["radio"], "damagedChance": 0.7 },
+        "M": { "types": ["medbay", "lab"], "damagedChance": 0.5 },
+        "B": { "types": ["lab", "common"], "damagedChance": 0.5 }
+      },
+      "entry": { "at": [0, 0, 0], "dir": "-x" }
+    },
+    {
+      "id": "deep",
+      "name": "Deep level",
+      "condition": "dark",
+      "seal": {
+        "kind": "power",
+        "label": "Deep bulkhead: needs 15 kW spare power",
+        "cost": [{ "item": "parts", "qty": 4 }]
+      },
+      "attachLevels": [3],
+      "levels": [
+        ["##+", "DDL", "..."],
+        ["...", "DDL", "M.."]
+      ],
+      "rooms": {
+        "D": { "types": ["geothermal", "boiler"], "damagedChance": 0.8 },
+        "M": { "types": ["medbay", "lab", "storage"], "damagedChance": 0.6 }
+      },
+      "shafts": { "L": { "broken": true, "repairCost": [{ "item": "parts", "qty": 3 }] } },
+      "entry": { "at": [2, 0, 0], "dir": "+x" }
+    },
+    {
+      "id": "hatch",
+      "name": "Delivery hatch",
+      "condition": "sealed",
+      "seal": { "kind": "keycard", "label": "Outer hatch: needs a keycard", "cost": [] },
+      "attachLevels": [0],
+      "levels": [["+A"]],
+      "rooms": { "A": { "types": ["airlock"] } },
+      "entry": { "at": [0, 0, 0], "dir": "-x" }
+    }
+  ]
+}
