@@ -1,5 +1,7 @@
 # PLAN.md — Modulo: Bunker
 
+> **Update (D-010, D-011):** the bunker is now a **pre-built 3D bunker**: section templates on a 3D grid, extending in all directions, with several shafts. You repair, upgrade and refit rooms, open sealed sections, and build machines and logistics. Building, merging and demolishing rooms (M1.2/M1.4 below) were replaced by this. First person is the main view.
+
 Status: **draft for your OK**. No game code is written beyond the Step 0 hello-world.
 Basis: RESEARCH.md (the recommended architecture is at its end) and the brief. Changes to the architecture get a DECISIONS.md entry.
 

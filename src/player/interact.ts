@@ -1,11 +1,10 @@
 import * as THREE from 'three';
 import type { InteractTag } from '../render/panelsView';
-import { cellAtX } from '../sim/core/geometry';
-import { GEO } from '../sim/core/state';
+import { gridAt, levelAtY } from '../sim/core/geometry';
 import type { World } from '../sim';
 
 export type Target =
-  (InteractTag & { distance: number }) | { kind: 'cell'; slotId: number; distance: number } | null;
+  (InteractTag & { distance: number }) | { kind: 'cell'; cellId: number; distance: number } | null;
 
 const PANEL_RANGE = 3.2;
 const SURVIVOR_RANGE = 5;
@@ -57,11 +56,12 @@ export class Interactor {
         continue;
       // World geometry: nudge into the surface and find the cell.
       const p = h.point.clone().addScaledVector(this.ray.ray.direction, 0.05);
-      const floor = Math.floor((-p.y + GEO.cellHeight) / GEO.floorPitch);
-      const cell = cellAtX(p.x);
-      if (!cell || floor < 0) return null;
-      const slot = this.world.slotAt(floor, cell.side, cell.index);
-      return slot ? { kind: 'cell', slotId: slot.id, distance: h.distance } : null;
+      const level = levelAtY(p.y);
+      const g = gridAt(p.x, p.z);
+      const cell = this.world.cellAt(g.x, level, g.z);
+      if (!cell) return null;
+      // Upper part of a tall room: report the room's lowest cell so actions apply to the room.
+      return { kind: 'cell', cellId: cell.id, distance: h.distance };
     }
     return null;
   }
@@ -70,7 +70,7 @@ export class Interactor {
   showHighlight(
     t: Target,
     objFor: (t: Target) => THREE.Object3D | null,
-    cellBox: (slotId: number) => THREE.Box3 | null,
+    cellBox: (cellId: number) => THREE.Box3 | null,
   ): void {
     const h = this.highlight;
     if (!t) {
@@ -78,7 +78,7 @@ export class Interactor {
       return;
     }
     let box: THREE.Box3 | null = null;
-    if (t.kind === 'cell') box = cellBox(t.slotId);
+    if (t.kind === 'cell') box = cellBox(t.cellId);
     else {
       const o = objFor(t);
       if (o) box = new THREE.Box3().setFromObject(o).expandByScalar(0.05);

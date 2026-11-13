@@ -10,7 +10,6 @@ import { GEO } from '../core/state';
 import { cellOfPoint, findPath, reachableFrom } from './nav';
 import { has, take } from '../core/store';
 import type { World } from '../core/world';
-import { isInRoom } from './rooms';
 
 /** Metres per tick (0.1 s real at x1 = brisk walk 1.3 m/s on screen). */
 export const WALK_PER_TICK = 0.13;

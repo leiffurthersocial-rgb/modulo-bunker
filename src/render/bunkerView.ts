@@ -1,182 +1,160 @@
 /**
- * Greybox bunker: per-floor merged static geometry (~2-3 draw calls per floor), rebuilt only when
- * that floor's layout signature changes; instanced ceiling bands per cell carry room colour or the
- * power/heat overlay colour; floating labels per cell.
+ * Greybox bunker for the 3D cell layout. Geometry is merged per level (opaque / translucent /
+ * ceiling batches, ~3 draw calls per level) and rebuilt only when that level's signature changes.
+ * Collider boxes come from the same code (BoxBatch sink). Instanced bands per room cell carry room
+ * colour or the power/heat overlay. In overview, levels above the focus and the focus ceiling hide.
  */
 import * as THREE from 'three';
 import { GEO } from '../sim/core/state';
-import type { Room, Slot } from '../sim/core/state';
-import { cellInnerX, cellsXRange, floorY } from '../sim/core/geometry';
+import type { Cell, Link, Room } from '../sim/core/state';
+import { LADDER_SIZE, WELL, cellCenter, cellX0, cellZ0, doorPoint, floorY } from '../sim/core/geometry';
 import type { World } from '../sim';
 import { BoxBatch, disposeTree } from './greybox';
 import type { AABB } from './greybox';
 import { makeLabel } from './labels';
 import { roomInfo } from '../sim/systems/rooms';
-import { GENERATED_FLOORS } from '../gen/bunker';
 
 export type Overlay = 'none' | 'power' | 'heat';
 
 const C = {
   slab: '#6f7377',
   wall: '#868b90',
-  wallDark: '#5d6166',
-  rock: '#2b2723',
-  empty: '#4f5a63',
+  outer: '#5d6166',
+  corridor: '#5b6168',
   sealed: '#e0b73a',
+  frozen: '#9fd8ff',
+  dark: '#14171a',
+  rubble: '#5a4a3c',
   damaged: '#7a5148',
-  landing: '#5b6168',
   ladder: '#c7c34a',
+  rail: '#c9a227',
   stripe: '#d24b3a',
+};
+const SEAL_COLOR: Record<string, string> = {
+  power: '#4fd1ff',
+  thaw: '#9fd8ff',
+  repair: '#e0b73a',
+  keycard: '#d24b3a',
 };
 
 const T = 0.2; // wall thickness
-const HALF_D = GEO.cellDepth / 2;
-const HALF_S = GEO.shaftWidth / 2;
+const S = GEO.cell;
+const H = GEO.cellHeight;
 
-interface FloorView {
+interface LevelView {
   group: THREE.Group;
-  front: THREE.Mesh | null;
+  ceiling: THREE.Mesh | null;
   labels: THREE.Group;
   signature: string;
-  labelTexts: Map<THREE.Sprite, string>;
 }
 
 export class BunkerView {
   readonly root = new THREE.Group();
-  private floors = new Map<number, FloorView>();
+  private levels = new Map<number, LevelView>();
   private mats = {
     opaque: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.02 }),
     translucent: new THREE.MeshStandardMaterial({
       vertexColors: true,
       transparent: true,
-      opacity: 0.32,
+      opacity: 0.34,
       depthWrite: false,
-      roughness: 0.6,
     }),
     band: new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.55, depthWrite: false }),
+    light: new THREE.MeshBasicMaterial({ color: '#fff3d6' }),
   };
-  /** Instanced ceiling bands, one instance per room/empty cell (all floors). */
   private bands: THREE.InstancedMesh;
-  private bandSlots: number[] = [];
-  /** Solid boxes per floor (for physics). */
+  private bandCells: number[] = [];
+  /** Solid boxes per level (for physics). */
   readonly colliders = new Map<number, AABB[]>();
-  /** Called after a floor is (re)built with its collider boxes. */
-  onFloorBuilt: ((floor: number, boxes: AABB[]) => void) | null = null;
+  onLevelBuilt: ((level: number, boxes: AABB[]) => void) | null = null;
   overlay: Overlay = 'none';
-  showFront = true;
-  focusFloor = 0;
-  visibleRange = 2;
+  focusLevel = 0;
   overview = false;
-  /** Rock mass behind/above the bunker, shown in the overview cutaway. */
-  private backdrop: THREE.Mesh;
+  readonly maxLevel: number;
   private tmpM = new THREE.Matrix4();
   private tmpC = new THREE.Color();
+  private bandOverlay: Overlay | null = null;
 
   constructor(private world: World) {
     for (const m of Object.values(this.mats)) m.userData.shared = true;
-    const bandGeo = new THREE.BoxGeometry(GEO.cellWidth - 0.4, 0.12, GEO.cellDepth - 0.4);
-    this.bands = new THREE.InstancedMesh(bandGeo, this.mats.band, GEO.cellsPerSide * 2 * GENERATED_FLOORS);
+    this.maxLevel = Math.max(...world.state.cells.map((c) => c.y));
+    const bandGeo = new THREE.BoxGeometry(S - 0.4, 0.12, S - 0.4);
+    this.bands = new THREE.InstancedMesh(bandGeo, this.mats.band, Math.max(1, world.state.cells.length));
     this.bands.frustumCulled = false;
     this.bands.renderOrder = 2;
     this.root.add(this.bands);
-    const rockMat = new THREE.MeshStandardMaterial({ color: '#1d1a17', roughness: 1 });
-    this.backdrop = new THREE.Mesh(new THREE.BoxGeometry(80, 120, 1), rockMat);
-    this.backdrop.position.set(0, -40, -GEO.cellDepth / 2 - 0.8);
-    const cap = new THREE.Mesh(
-      new THREE.BoxGeometry(80, 6, GEO.cellDepth + 1),
-      new THREE.MeshStandardMaterial({ color: '#d9e4ea', roughness: 0.9 }),
-    );
-    cap.position.set(0, GEO.cellHeight + GEO.slab + 3, 0);
-    this.backdrop.add(cap);
-    cap.position.z = GEO.cellDepth / 2 + 0.8;
-    this.root.add(this.backdrop);
     this.sync(true);
   }
 
-  /** Rebuild floors whose layout changed. Call every frame (cheap when nothing changed). */
+  /** Rebuild levels whose layout changed. Cheap when nothing changed. */
   sync(force = false): void {
-    const st = this.world.state;
-    for (let f = 0; f < GENERATED_FLOORS; f++) {
-      const sig = this.signature(f);
-      const fv = this.floors.get(f);
-      if (!force && fv && fv.signature === sig) continue;
-      if (fv) {
-        this.root.remove(fv.group);
-        disposeTree(fv.group);
+    for (let y = 0; y <= this.maxLevel; y++) {
+      const sig = this.signature(y);
+      const lv = this.levels.get(y);
+      if (!force && lv && lv.signature === sig) continue;
+      if (lv) {
+        this.root.remove(lv.group);
+        disposeTree(lv.group);
       }
-      this.floors.set(f, this.buildFloor(f, sig));
-      this.onFloorBuilt?.(f, this.colliders.get(f)!);
+      this.levels.set(y, this.buildLevel(y, sig));
+      this.onLevelBuilt?.(y, this.colliders.get(y)!);
     }
-    // Band instances: one per non-rock, non-sealed cell on open/sealed floors.
-    this.bandSlots = st.slots
-      .filter((s) => s.floor < GENERATED_FLOORS && (s.state === 'room' || s.state === 'empty'))
-      .map((s) => s.id);
-    this.bands.count = this.bandSlots.length;
-    this.layoutBands();
-    this.updateColors();
+    // One band per room cell at the room's true ceiling (skip lower cells of tall rooms).
+    this.bandCells = this.world.state.cells
+      .filter((c) => c.roomId !== null && this.world.cellAt(c.x, c.y - 1, c.z)?.roomId !== c.roomId)
+      .map((c) => c.id);
+    this.bands.count = this.bandCells.length;
+    this.bandOverlay = null;
+    this.update();
     this.applyVisibility();
   }
 
-  private bandOverlay: Overlay | null = null;
-
-  /** Per-frame cheap updates: overlay colours (and band shape when the overlay changes). */
   update(): void {
     if (this.bandOverlay !== this.overlay) this.layoutBands();
-    this.updateColors();
+    this.bandCells.forEach((id, i) => {
+      const c = this.world.cell(id)!;
+      this.tmpC.set(this.bandColor(this.world.room(c.roomId)!));
+      this.bands.setColorAt(i, this.tmpC);
+    });
+    if (this.bands.instanceColor) this.bands.instanceColor.needsUpdate = true;
   }
 
-  /** Thin ceiling band normally; full-height translucent block per cell while an overlay is on. */
   private layoutBands(): void {
     this.bandOverlay = this.overlay;
     const full = this.overlay !== 'none';
-    const h = full ? GEO.cellHeight - 0.1 : 0.12;
     this.mats.band.opacity = full ? 0.38 : 0.55;
-    this.bandSlots.forEach((id, i) => {
-      const s = this.world.slot(id)!;
-      const cx = (cellInnerX(s.side, s.index) + cellInnerX(s.side, s.index + 1)) / 2;
-      const y = floorY(s.floor) + (full ? GEO.cellHeight / 2 : GEO.cellHeight - 0.1);
-      this.tmpM.makeScale(1, h / 0.12, 1).setPosition(cx, y, 0);
+    this.bandCells.forEach((id, i) => {
+      const c = this.world.cell(id)!;
+      const p = cellCenter(c);
+      if (this.overview && c.y < this.focusLevel) {
+        this.tmpM.makeScale(0, 0, 0);
+        this.bands.setMatrixAt(i, this.tmpM);
+        return;
+      }
+      const h = full ? H - 0.1 : 0.12;
+      const y = floorY(c.y) + (full ? H / 2 : H - 0.1);
+      this.tmpM.makeScale(1, h / 0.12, 1).setPosition(p.x, y, p.z);
       this.bands.setMatrixAt(i, this.tmpM);
     });
     this.bands.instanceMatrix.needsUpdate = true;
   }
 
-  private signature(f: number): string {
-    const st = this.world.state;
-    const parts: string[] = [st.floors[f]!.state, st.floors[f + 1]?.state ?? ''];
-    for (const s of st.slots) {
-      if (s.floor !== f) continue;
-      const r = this.world.room(s.roomId);
-      parts.push(
-        `${s.index}${s.side}${s.state}${r ? `${r.id}:${r.type}:${r.tier}:${r.damaged ? 1 : 0}` : ''}${s.seal?.kind ?? ''}`,
-      );
+  private bandColor(r: Room): THREE.ColorRepresentation {
+    if (this.overlay === 'heat') return heatColor(r.temp);
+    if (this.overlay === 'power') {
+      if (r.damaged || !r.enabled || !this.world.roomOpen(r)) return '#555';
+      const info = roomInfo(this.world, r);
+      if (info.tier.effects.some((e) => e.type === 'power')) return '#4fd1ff';
+      return r.powered >= 0.999 ? '#3fbf5f' : r.powered > 0 ? '#e0b73a' : '#d24b3a';
     }
-    return parts.join('|');
+    if (!this.world.roomOpen(r)) return '#333a40';
+    return r.damaged ? C.damaged : this.world.defs.rooms[r.type]!.color;
   }
 
-  private applyVisibility(): void {
-    for (const [f, fv] of this.floors) {
-      const near = Math.abs(f - this.focusFloor) <= this.visibleRange;
-      fv.group.visible = this.overview || near;
-      if (fv.front) fv.front.visible = this.showFront && !this.overview;
-      fv.labels.visible = this.overview
-        ? Math.abs(f - this.focusFloor) <= 3
-        : Math.abs(f - this.focusFloor) <= 1;
-      const k = this.overview ? 1.6 : 1;
-      for (const o of fv.labels.children) {
-        const base = o.userData.baseScale as THREE.Vector3 | undefined;
-        if (base) o.scale.set(base.x * k, base.y * k, 1);
-        const sm = (o as THREE.Sprite).material;
-        if (sm) sm.depthTest = !this.overview;
-      }
-    }
-    this.backdrop.visible = this.overview;
-  }
-
-  setFocus(floor: number): void {
-    const f = Math.max(0, Math.min(GENERATED_FLOORS - 1, Math.round(floor)));
-    if (f !== this.focusFloor) {
-      this.focusFloor = f;
+  setFocus(level: number): void {
+    const f = Math.max(0, Math.min(this.maxLevel, Math.round(level)));
+    if (f !== this.focusLevel) {
+      this.focusLevel = f;
       this.applyVisibility();
     }
   }
@@ -185,247 +163,306 @@ export class BunkerView {
     this.applyVisibility();
   }
 
-  private updateColors(): void {
-    const st = this.world.state;
-    this.bandSlots.forEach((id, i) => {
-      const s = this.world.slot(id)!;
-      const r = this.world.room(s.roomId);
-      this.tmpC.set(this.bandColor(s, r, st.outsideTemp));
-      this.bands.setColorAt(i, this.tmpC);
-    });
-    if (this.bands.instanceColor) this.bands.instanceColor.needsUpdate = true;
+  private applyVisibility(): void {
+    for (const [y, lv] of this.levels) {
+      lv.group.visible = this.overview ? y >= this.focusLevel : true;
+      if (lv.ceiling) lv.ceiling.visible = !(this.overview && y === this.focusLevel);
+      lv.labels.visible = this.overview ? y === this.focusLevel : Math.abs(y - this.focusLevel) <= 1;
+      const k = this.overview ? 2.3 : 1;
+      for (const o of lv.labels.children) {
+        const base = o.userData.baseScale as THREE.Vector3 | undefined;
+        if (base) o.scale.set(base.x * k, base.y * k, 1);
+        const sm = (o as THREE.Sprite).material;
+        if (sm) sm.depthTest = !this.overview;
+      }
+    }
+    this.layoutBands();
   }
 
-  private bandColor(s: Slot, r: Room | undefined, _outside: number): THREE.ColorRepresentation {
-    if (this.overlay === 'heat') {
-      if (!r) return '#334455';
-      return heatColor(r.temp);
+  private signature(y: number): string {
+    const w = this.world;
+    const parts: string[] = [];
+    for (const c of w.state.cells) {
+      if (c.y !== y && c.y !== y - 1 && c.y !== y + 1) continue;
+      const r = w.room(c.roomId);
+      const sh = w.shaft(c.shaftId);
+      parts.push(
+        `${c.id}${w.cellOpen(c) ? 'o' : 's'}${r ? `${r.type}${r.tier}${r.damaged ? 'd' : ''}` : ''}${sh?.broken ? 'b' : ''}`,
+      );
     }
-    if (this.overlay === 'power') {
-      if (!r) return '#333';
-      if (r.damaged || !r.enabled) return '#555';
-      const info = roomInfo(this.world, r);
-      const produces = info.tier.effects.some((e) => e.type === 'power');
-      if (produces) return '#4fd1ff';
-      return r.powered >= 0.999 ? '#3fbf5f' : r.powered > 0 ? '#e0b73a' : '#d24b3a';
-    }
-    if (!r) return C.empty;
-    if (r.damaged) return C.damaged;
-    return this.world.defs.rooms[r.type]!.color;
+    for (const l of w.state.links) if (l.sealed) parts.push(`L${l.id}`);
+    for (const m of w.state.machines) parts.push(`m${m.id}`);
+    return parts.join('|');
   }
 
-  private buildFloor(f: number, signature: string): FloorView {
-    const st = this.world.state;
-    const y0 = floorY(f);
-    const H = GEO.cellHeight;
+  private buildLevel(y: number, signature: string): LevelView {
+    const w = this.world;
+    const y0 = floorY(y);
     const sink: AABB[] = [];
-    this.colliders.set(f, sink);
+    this.colliders.set(y, sink);
     const opaque = new BoxBatch(sink);
     const translucent = new BoxBatch(sink);
-    const front = new BoxBatch(sink);
+    const ceiling = new BoxBatch(sink);
+    const fx = new BoxBatch(); // visual-only translucent (tints)
+    const lights = new BoxBatch(); // emissive ceiling strips (visual only)
     const group = new THREE.Group();
-    group.name = `floor-${f}`;
+    group.name = `level-${y}`;
     const labels = new THREE.Group();
-    const labelTexts = new Map<THREE.Sprite, string>();
-    const floorState = st.floors[f]!.state;
+    const cells = w.state.cells.filter((c) => c.y === y);
 
-    const slotsOf = (side: -1 | 1) =>
-      st.slots.filter((s) => s.floor === f && s.side === side).sort((a, b) => a.index - b.index);
+    for (const c of cells) {
+      const x0 = cellX0(c);
+      const z0 = cellZ0(c);
+      const room = w.room(c.roomId);
+      const shaft = w.shaft(c.shaftId);
+      const below = w.cellAt(c.x, y + 1, c.z);
+      const above = w.cellAt(c.x, y - 1, c.z);
+      const open = w.cellOpen(c);
+      const tallUpper = room && below && below.roomId === room.id; // no floor: room continues below
 
-    // --- Shaft landing (always built for generated floors) ---
-    opaque.add(-HALF_S + 0.8, y0 - GEO.slab, -HALF_D, HALF_S, y0, -0.2, C.landing);
-    opaque.add(-HALF_S, y0 - GEO.slab, -HALF_D + 0.8, -HALF_S + 0.8, y0, -0.2, C.landing);
-    // Ladder rails in the hole (back-left corner of the landing).
-    opaque.add(
-      -HALF_S + 0.05,
-      y0 - GEO.slab,
-      -HALF_D + 0.02,
-      -HALF_S + 0.12,
-      y0 + H,
-      -HALF_D + 0.12,
-      C.ladder,
-    );
-    opaque.add(
-      -HALF_S + 0.68,
-      y0 - GEO.slab,
-      -HALF_D + 0.02,
-      -HALF_S + 0.75,
-      y0 + H,
-      -HALF_D + 0.12,
-      C.ladder,
-    );
-    for (let k = 0; k < 9; k++) {
-      const yy = y0 - GEO.slab + 0.15 + k * 0.42;
-      opaque.add(-HALF_S + 0.12, yy, -HALF_D + 0.04, -HALF_S + 0.68, yy + 0.05, -HALF_D + 0.1, C.ladder);
+      // --- Floor slab ---
+      const floorCol = c.kind === 'corridor' ? C.corridor : C.slab;
+      if (!tallUpper) {
+        if (shaft?.kind === 'elevator' && below?.shaftId === shaft.id) {
+          const i = WELL.inset;
+          opaque.add(x0, y0 - GEO.slab, z0, x0 + S, y0, z0 + i, floorCol);
+          opaque.add(x0, y0 - GEO.slab, z0 + S - i, x0 + S, y0, z0 + S, floorCol);
+          opaque.add(x0, y0 - GEO.slab, z0 + i, x0 + i, y0, z0 + S - i, floorCol);
+          opaque.add(x0 + S - i, y0 - GEO.slab, z0 + i, x0 + S, y0, z0 + S - i, floorCol);
+        } else if (shaft?.kind === 'ladder' && below?.shaftId === shaft.id) {
+          const L = LADDER_SIZE;
+          opaque.add(x0 + L, y0 - GEO.slab, z0, x0 + S, y0, z0 + S, floorCol);
+          opaque.add(x0, y0 - GEO.slab, z0 + L, x0 + L, y0, z0 + S, floorCol);
+        } else opaque.add(x0, y0 - GEO.slab, z0, x0 + S, y0, z0 + S, floorCol);
+      }
+      // --- Ceiling light strip in open, non-shaft cells (none in sealed / tall-upper cells) ---
+      const tallLower = room && above && above.roomId === room.id;
+      if (open && c.kind !== 'shaft' && !tallUpper) {
+        const ly = tallLower ? y0 + H * 2 + GEO.slab - 0.12 : y0 + H - 0.08;
+        lights.add(x0 + 1.5, ly, z0 + S / 2 - 0.12, x0 + S - 1.5, ly + 0.06, z0 + S / 2 + 0.12, '#ffffff');
+      }
+      // --- Ceiling where nothing is above ---
+      if (!above) ceiling.add(x0, y0 + H, z0, x0 + S, y0 + H + GEO.slab, z0 + S, C.slab);
+
+      // --- Walls (each shared wall drawn once, from the lower id) ---
+      for (const [dx, dz] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ] as const) {
+        const n = w.cellAt(c.x + dx, y, c.z + dz);
+        if (n && room && n.roomId === room.id) continue;
+        if (n && n.id < c.id) continue;
+        const link = n ? w.linksOf(c.id).find((l) => l.a === n.id || l.b === n.id) : undefined;
+        this.wall(opaque, translucent, c, dx, dz, y0, link, !n);
+      }
+
+      // --- Shaft details ---
+      if (shaft?.kind === 'elevator') {
+        const i = WELL.inset;
+        if (below?.shaftId === shaft.id || above?.shaftId === shaft.id) {
+          // Guide posts in the well corners.
+          for (const [px, pz] of [
+            [x0 + i, z0 + i],
+            [x0 + S - i - 0.15, z0 + i],
+            [x0 + i, z0 + S - i - 0.15],
+            [x0 + S - i - 0.15, z0 + S - i - 0.15],
+          ] as const)
+            opaque.add(px, y0 - GEO.slab, pz, px + 0.15, y0 + H, pz + 0.15, C.outer, false);
+          // Railings on three sides of the well (the -z side has the gate, see ActorsView/physics).
+          opaque.add(x0 + i, y0, z0 + S - i - 0.06, x0 + S - i, y0 + 1.1, z0 + S - i, C.rail);
+          opaque.add(x0 + i - 0.06, y0, z0 + i, x0 + i, y0 + 1.1, z0 + S - i, C.rail);
+          opaque.add(x0 + S - i, y0, z0 + i, x0 + S - i + 0.06, y0 + 1.1, z0 + S - i, C.rail);
+        }
+      }
+      if (shaft?.kind === 'ladder') {
+        const top = above?.shaftId === shaft.id ? y0 + H + GEO.slab : y0 + 1.2;
+        const bottom = y0 - GEO.slab;
+        const col = shaft.broken ? C.stripe : C.ladder;
+        opaque.add(x0 + 0.05, bottom, z0 + 0.02, x0 + 0.12, top, z0 + 0.12, col, false);
+        opaque.add(x0 + 0.68, bottom, z0 + 0.02, x0 + 0.75, top, z0 + 0.12, col, false);
+        for (let k = 0; k < 9; k++) {
+          const yy = bottom + 0.15 + k * 0.42;
+          if (yy > top) break;
+          if (shaft.broken && k % 3 === 1) continue; // missing rungs
+          opaque.add(x0 + 0.12, yy, z0 + 0.04, x0 + 0.68, yy + 0.05, z0 + 0.1, col, false);
+        }
+        if (shaft.broken && y === shaft.top)
+          this.label(labels, x0 + 1.2, y0 + 1.8, z0 + 1.2, [
+            { text: 'BROKEN LADDER', color: '#ff7a6a' },
+            { text: 'E: repair', size: 0.6 },
+          ]);
+      }
+
+      // --- Room interiors ---
+      if (room && !tallUpper) this.roomProps(opaque, room, c, y0);
+
+      // --- Sealed section tint / rubble ---
+      if (!open) {
+        const sec = w.state.sections.find((s) => s.id === c.sectionId)!;
+        const tint = sec.condition === 'frozen' ? C.frozen : sec.condition === 'dark' ? C.dark : null;
+        if (tint) fx.add(x0 + 0.15, y0 + 0.02, z0 + 0.15, x0 + S - 0.15, y0 + H - 0.05, z0 + S - 0.15, tint);
+        if (sec.condition === 'collapsed' && c.kind === 'corridor')
+          for (let k = 0; k < 4; k++)
+            opaque.add(
+              x0 + 1 + k * 1.1,
+              y0,
+              z0 + 1.5 + (k % 2),
+              x0 + 1.9 + k * 1.1,
+              y0 + 0.5 + (k % 3) * 0.4,
+              z0 + 2.6 + (k % 2),
+              C.rubble,
+              false,
+            );
+      }
     }
-    // Shaft back wall and front wall.
-    opaque.add(-HALF_S, y0 - GEO.slab, -HALF_D - T, HALF_S, y0 + H, -HALF_D, C.wall);
-    front.add(-HALF_S, y0 - GEO.slab, HALF_D, HALF_S, y0 + H, HALF_D + T, C.wall);
-    // Elevator well side guides (thin posts at the shaft edge).
-    opaque.add(-HALF_S, y0, -0.2, -HALF_S + 0.15, y0 + H, 0.0, C.wallDark);
-    opaque.add(HALF_S - 0.15, y0, -0.2, HALF_S, y0 + H, 0.0, C.wallDark);
-    if (f === 0) opaque.add(-HALF_S, y0 + H, -HALF_D - T, HALF_S, y0 + H + GEO.slab, HALF_D + T, C.slab);
-    if (floorState === 'sealed') {
-      // Sealed landing: bulkhead across the landing on both sides.
-      translucent.add(-HALF_S, y0, -HALF_D, -HALF_S + 0.1, y0 + H, -0.2, C.sealed);
-      translucent.add(HALF_S - 0.1, y0, -HALF_D, HALF_S, y0 + H, -0.2, C.sealed);
-      this.addLabel(labels, labelTexts, 0, y0 + 2.4, [
-        { text: `FLOOR ${f + 1} SEALED`, color: '#e0b73a' },
-        { text: 'Unseal at landing panel', size: 0.6 },
+
+    // Room labels (at the room's lowest level centre).
+    for (const r of w.state.rooms) {
+      const rc = r.cellIds.map((id) => w.cell(id)!);
+      const lowest = Math.max(...rc.map((c) => c.y));
+      if (lowest !== y) continue;
+      const floorCells = rc.filter((c) => c.y === lowest);
+      const cx = floorCells.reduce((a, c) => a + cellCenter(c).x, 0) / floorCells.length;
+      const cz = floorCells.reduce((a, c) => a + cellCenter(c).z, 0) / floorCells.length;
+      const def = w.defs.rooms[r.type]!;
+      const open = w.roomOpen(r);
+      const tall = new Set(rc.map((c) => c.y)).size > 1;
+      this.label(labels, cx, y0 + 2.5, cz, [
+        {
+          text: `${def.short} T${r.tier}${rc.length > 1 ? ` ·${rc.length}` : ''}${tall ? ' ↕' : ''}`,
+          color: open ? def.color : '#8a8f94',
+        },
+        { text: def.name, size: 0.6 },
+        {
+          text: !open ? 'SEALED SECTION' : r.damaged ? 'DAMAGED - repair' : 'OK',
+          size: 0.6,
+          color: !open ? '#e0b73a' : r.damaged ? '#ff7a6a' : '#8fd18f',
+        },
+      ]);
+    }
+    // Bulkhead labels.
+    for (const l of w.state.links) {
+      if (!l.sealed || !l.seal) continue;
+      const a = w.cell(l.a)!;
+      if (a.y !== y) continue;
+      const p = doorPoint(a, w.cell(l.b)!);
+      this.label(labels, p.x, y0 + 2.6, p.z, [
+        { text: 'SEALED BULKHEAD', color: SEAL_COLOR[l.seal.kind] ?? '#e0b73a' },
+        { text: l.seal.label, size: 0.55 },
       ]);
     }
 
-    for (const side of [-1, 1] as const) {
-      const cells = slotsOf(side);
-      for (const s of cells) {
-        const [x0, x1] = cellsXRange(side, [s.index]);
-        if (s.state === 'rock') {
-          opaque.add(x0, y0 - GEO.slab, -HALF_D - T, x1, y0 + H + 0.001, HALF_D + T, C.rock);
-          continue;
-        }
-        // Floor slab + back wall + front wall for every non-rock cell.
-        opaque.add(x0, y0 - GEO.slab, -HALF_D, x1, y0, HALF_D, C.slab);
-        opaque.add(x0, y0 - GEO.slab, -HALF_D - T, x1, y0 + H, -HALF_D, C.wall);
-        front.add(x0, y0 - GEO.slab, HALF_D, x1, y0 + H, HALF_D + T, C.wall);
-        if (f === 0) opaque.add(x0, y0 + H, -HALF_D - T, x1, y0 + H + GEO.slab, HALF_D + T, C.slab);
-        // Ceiling where the cell above is rock/unbuilt is covered by the rock block above; fine.
-
-        if (s.state === 'sealed') {
-          translucent.add(
-            x0 + 0.1,
-            y0 + 0.01,
-            -HALF_D + 0.1,
-            x1 - 0.1,
-            y0 + H - 0.05,
-            HALF_D - 0.1,
-            C.sealed,
-          );
-          const seal = s.seal!;
-          const costTxt = seal.cost.map((c) => `${c.qty} ${c.item}`).join(', ');
-          const how =
-            seal.kind === 'keycard'
-              ? 'Needs keycard'
-              : seal.kind === 'power'
-                ? `Needs spare power${costTxt ? ' + ' + costTxt : ''}`
-                : `Repair: ${costTxt}`;
-          this.addLabel(labels, labelTexts, (x0 + x1) / 2, y0 + 2.2, [
-            { text: 'SEALED', color: '#e0b73a' },
-            { text: how, size: 0.6 },
-          ]);
-          continue;
-        }
-        const r = this.world.room(s.roomId);
-        if (s.state === 'empty') {
-          opaque.add(x0 + 0.3, y0, -HALF_D + 0.3, x1 - 0.3, y0 + 0.02, HALF_D - 0.3, C.empty);
-          this.addLabel(labels, labelTexts, (x0 + x1) / 2, y0 + 2.2, [
-            { text: 'EMPTY', color: '#9fb3c4' },
-            { text: 'B: build', size: 0.6, color: '#9aa' },
-          ]);
-        } else if (r && r.slotIds[0] === s.id) {
-          this.addRoom(opaque, r, y0);
-          const def = this.world.defs.rooms[r.type]!;
-          const [rx0, rx1] = cellsXRange(
-            side,
-            r.slotIds.map((id) => this.world.slot(id)!.index),
-          );
-          this.addLabel(labels, labelTexts, (rx0 + rx1) / 2, y0 + 2.45, [
-            {
-              text: `${def.short} T${r.tier}${r.slotIds.length > 1 ? ` x${r.slotIds.length}` : ''}`,
-              color: def.color,
-            },
-            { text: def.name, size: 0.6 },
-            {
-              text: r.damaged ? 'DAMAGED - repair' : 'OK',
-              size: 0.6,
-              color: r.damaged ? '#ff7a6a' : '#8fd18f',
-            },
-          ]);
-        }
-      }
-      // Partition walls between consecutive cells (boundary k between index k-1 and k; k=0 is shaft).
-      for (let k = 0; k <= GEO.cellsPerSide; k++) {
-        const inner = k === 0 ? null : cells[k - 1]!;
-        const outer = k === GEO.cellsPerSide ? null : cells[k]!;
-        const innerOpen = k === 0 ? true : inner!.state !== 'rock';
-        const outerOpen = outer ? outer.state !== 'rock' : false;
-        if (!innerOpen && !outerOpen) continue;
-        if (!innerOpen || (!outerOpen && k !== GEO.cellsPerSide && outer)) continue; // rock block seals it
-        const sameRoom = inner && outer && inner.roomId !== null && inner.roomId === outer.roomId;
-        if (sameRoom) continue;
-        const xb = side * (k === 0 ? HALF_S : cellInnerX(side, k) * side);
-        const xa = xb - (side * T) / 2;
-        const xc = xb + (side * T) / 2;
-        const lo = Math.min(xa, xc);
-        const hi = Math.max(xa, xc);
-        const hasDoor = outer !== null && k < GEO.cellsPerSide;
-        if (!hasDoor) {
-          opaque.add(lo, y0, -HALF_D, hi, y0 + H, HALF_D, C.wall);
-          continue;
-        }
-        const dz0 = GEO.doorZ - GEO.doorWidth / 2;
-        const dz1 = GEO.doorZ + GEO.doorWidth / 2;
-        opaque.add(lo, y0, -HALF_D, hi, y0 + H, dz0, C.wall);
-        opaque.add(lo, y0, dz1, hi, y0 + H, HALF_D, C.wall);
-        opaque.add(lo, y0 + GEO.doorHeight, dz0, hi, y0 + H, dz1, C.wall);
-      }
-    }
-
-    const add = (batch: BoxBatch, mat: THREE.Material, name: string) => {
+    const add = (batch: BoxBatch, mat: THREE.Material, name: string, order = 0) => {
       const g = batch.build();
       if (!g) return null;
       const m = new THREE.Mesh(g, mat);
       m.name = name;
+      m.renderOrder = order;
       group.add(m);
       return m;
     };
     add(opaque, this.mats.opaque, 'opaque');
-    const tm = add(translucent, this.mats.translucent, 'translucent');
-    if (tm) tm.renderOrder = 3;
-    const fm = add(front, this.mats.opaque, 'front');
+    add(translucent, this.mats.translucent, 'translucent', 3);
+    add(fx, this.mats.translucent, 'tint', 3);
+    add(lights, this.mats.light, 'lights');
+    const ceil = add(ceiling, this.mats.opaque, 'ceiling');
     group.add(labels);
     this.root.add(group);
-    return { group, front: fm, labels, signature, labelTexts };
+    return { group, ceiling: ceil, labels, signature };
   }
 
-  /** Greybox room interior: tinted floor and `blocks` prop boxes per cell (tier read-out). */
-  private addRoom(batch: BoxBatch, r: Room, y0: number): void {
+  /** One cell face: outer rock wall, plain wall, doorway, or sealed bulkhead panel. */
+  private wall(
+    opaque: BoxBatch,
+    translucent: BoxBatch,
+    c: Cell,
+    dx: number,
+    dz: number,
+    y0: number,
+    link: Link | undefined,
+    outer: boolean,
+  ): void {
+    const x0 = cellX0(c);
+    const z0 = cellZ0(c);
+    const col = outer ? C.outer : C.wall;
+    const y1 = y0 + H;
+    const yb = y0 - GEO.slab;
+    // Face plane coordinate and extent along the face.
+    const alongX = dz !== 0; // wall runs along x
+    const plane = alongX ? (dz > 0 ? z0 + S : z0) : dx > 0 ? x0 + S : x0;
+    const a0 = alongX ? x0 : z0;
+    const a1 = a0 + S;
+    const box = (u0: number, u1: number, v0: number, v1: number, color: string, batch = opaque) => {
+      if (alongX) batch.add(u0, v0, plane - T / 2, u1, v1, plane + T / 2, color);
+      else batch.add(plane - T / 2, v0, u0, plane + T / 2, v1, u1, color);
+    };
+    if (!link) {
+      box(a0, a1, yb, y1, col);
+      return;
+    }
+    const mid = (a0 + a1) / 2;
+    const d0 = mid - GEO.doorWidth / 2;
+    const d1 = mid + GEO.doorWidth / 2;
+    box(a0, d0, yb, y1, col);
+    box(d1, a1, yb, y1, col);
+    box(d0, d1, y0 + GEO.doorHeight, y1, col);
+    if (link.sealed)
+      box(d0, d1, y0, y0 + GEO.doorHeight, SEAL_COLOR[link.seal?.kind ?? 'repair'] ?? C.sealed, translucent);
+  }
+
+  /** Greybox props: floor tint + `blocks` boxes along the walls (machine corners stay free). */
+  private roomProps(batch: BoxBatch, r: Room, c: Cell, y0: number): void {
     const def = this.world.defs.rooms[r.type]!;
     const tier = def.tiers[r.tier - 1]!;
-    const color = new THREE.Color(r.damaged ? C.damaged : def.color);
-    const floorTint = color.clone().multiplyScalar(0.45);
-    for (const id of r.slotIds) {
-      const s = this.world.slot(id)!;
-      const [x0, x1] = cellsXRange(s.side, [s.index]);
-      batch.add(x0 + 0.15, y0, -HALF_D + 0.15, x1 - 0.15, y0 + 0.02, HALF_D - 0.15, floorTint);
-      // Prop blocks along the front half, deterministic layout by index.
-      for (let b = 0; b < tier.blocks; b++) {
-        const col = b % 4;
-        const row = Math.floor(b / 4);
-        const bx = x0 + 0.6 + col * 1.25;
-        const bz = 0.4 + row * 1.6;
-        const h = 0.7 + ((b * 37 + r.tier * 11) % 9) * 0.1;
-        batch.add(bx, y0, bz, bx + 1, y0 + h, bz + 1.1, color);
-      }
-      if (r.damaged) {
-        // Hazard stripes on the floor.
-        for (let k = 0; k < 3; k++)
-          batch.add(x0 + 1 + k * 1.6, y0 + 0.02, -1.2, x0 + 1.6 + k * 1.6, y0 + 0.05, -0.8, C.stripe);
-      }
+    const open = this.world.roomOpen(r);
+    const color = new THREE.Color(!open ? '#3a3f45' : r.damaged ? C.damaged : def.color);
+    const x0 = cellX0(c);
+    const z0 = cellZ0(c);
+    batch.add(
+      x0 + 0.15,
+      y0,
+      z0 + 0.15,
+      x0 + S - 0.15,
+      y0 + 0.02,
+      z0 + S - 0.15,
+      color.clone().multiplyScalar(0.45),
+    );
+    const machineRoom = Object.values(this.world.defs.machines).some((m) => m.allowedRooms.includes(r.type));
+    // Prop spots: wall-side spots between the corners and the door gaps.
+    const spots: [number, number][] = [
+      [0.25, 1.0],
+      [0.25, 4.0],
+      [S - 1.05, 1.0],
+      [S - 1.05, 4.0],
+      [1.0, 0.25],
+      [4.0, 0.25],
+      [1.0, S - 1.05],
+      [4.0, S - 1.05],
+    ];
+    const n = machineRoom ? Math.min(2, tier.blocks) : tier.blocks;
+    for (let b = 0; b < Math.min(n, spots.length); b++) {
+      const [sx, sz] = spots[(b * 3 + c.id) % spots.length]!;
+      const h = 0.7 + ((b * 37 + r.tier * 11) % 9) * 0.1;
+      batch.add(x0 + sx, y0, z0 + sz, x0 + sx + 0.8, y0 + h, z0 + sz + 0.8, color);
     }
+    if (r.damaged)
+      for (let k = 0; k < 3; k++)
+        batch.add(x0 + 1.2 + k * 1.4, y0 + 0.02, z0 + 2.8, x0 + 1.8 + k * 1.4, y0 + 0.05, z0 + 3.2, C.stripe);
   }
 
-  private addLabel(
+  private label(
     group: THREE.Group,
-    texts: Map<THREE.Sprite, string>,
     x: number,
     y: number,
+    z: number,
     lines: { text: string; color?: string; size?: number }[],
   ): void {
-    const sprite = makeLabel(lines, 0.75 + 0.2 * (lines.length - 1));
-    sprite.position.set(x, y, 0);
+    const sprite = makeLabel(lines, 0.7 + 0.2 * (lines.length - 1));
+    sprite.position.set(x, y, z);
     sprite.userData.baseScale = sprite.scale.clone();
     group.add(sprite);
-    texts.set(sprite, lines.map((l) => l.text).join('\n'));
   }
 
   dispose(): void {
@@ -434,7 +471,7 @@ export class BunkerView {
   }
 }
 
-/** Blue (cold) -> green (comfortable) -> red (hot). Colourblind-safer palette later (Phase 6). */
+/** Blue (cold) -> green (comfortable) -> red (hot). */
 export function heatColor(t: number): THREE.Color {
   const c = new THREE.Color();
   if (t <= 0) return c.set('#2f5bd8');

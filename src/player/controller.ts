@@ -1,8 +1,7 @@
 import type { Intent } from '../input/input';
-import { PLAYER_RADIUS, CAR } from './physics';
+import { PLAYER_RADIUS } from './physics';
 import type { PhysicsWorld } from './physics';
-import { GEO } from '../sim/core/state';
-import { floorY } from '../sim/core/geometry';
+import { levelAtY } from '../sim/core/geometry';
 
 const WALK = 3.4;
 const SPRINT = 5.6;
@@ -16,13 +15,24 @@ const EYE_ABOVE_CENTER_STAND = 0.75;
 const EYE_ABOVE_CENTER_CROUCH = 0.35;
 const COYOTE = 0.12;
 
-/** Ladder column (floor-local), matches the hole in the landing slab. */
-export const LADDER = {
-  x0: -GEO.shaftWidth / 2,
-  x1: -GEO.shaftWidth / 2 + 0.8,
-  z0: -GEO.cellDepth / 2,
-  z1: -GEO.cellDepth / 2 + 0.8,
-};
+/** A moving elevator floor (world x/z footprint, current top y, and its movement this frame). */
+export interface CarZone {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+  y: number;
+  dy: number;
+}
+/** A climbable ladder column (world footprint, bottom/top feet heights). */
+export interface LadderZone {
+  x0: number;
+  x1: number;
+  z0: number;
+  z1: number;
+  bottom: number;
+  top: number;
+}
 
 export type MoveMode = 'walk' | 'ladder';
 
@@ -38,11 +48,14 @@ export class FirstPersonController {
   private sinceGround = 0;
   /** Highest feet y since leaving the ground (fall-recovery safety net). */
   private fallStart = 0;
-  /** Lowest open floor (ladder bottom). Set by the game. */
-  lowestOpenFloor = 0;
+  /** Elevator cars and ladders, refreshed by the game every frame. */
+  cars: CarZone[] = [];
+  ladders: LadderZone[] = [];
   /** Head-bob phase (render only). */
   private bob = 0;
   bobEnabled = true;
+  /** Called after a long fall with the level fallen from (game puts the player back somewhere safe). */
+  onFall: ((level: number) => void) | null = null;
   /** Debug free camera: fly through walls. */
   noclip = false;
 
@@ -57,9 +70,9 @@ export class FirstPersonController {
     return this.position.y - this.phys.halfHeight - PLAYER_RADIUS;
   }
 
-  /** Current floor index from feet height. */
-  get floor(): number {
-    return Math.max(0, Math.round(-this.feetY / GEO.floorPitch));
+  /** Current level from feet height. */
+  get level(): number {
+    return Math.max(0, levelAtY(this.feetY + 0.1));
   }
 
   teleport(x: number, feetY: number, z: number, yaw: number): void {
@@ -74,7 +87,7 @@ export class FirstPersonController {
   /**
    * @param carDeltaY vertical movement of the elevator car this frame (carried when standing in it)
    */
-  update(intent: Intent, dt: number, carY: number, carDeltaY: number): void {
+  update(intent: Intent, dt: number): void {
     this.yaw -= intent.lookDX;
     this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - intent.lookDY));
     const wantCrouch = intent.crouch;
@@ -98,10 +111,16 @@ export class FirstPersonController {
       return;
     }
     const p = this.position;
-    const inLadder = p.x > LADDER.x0 && p.x < LADDER.x1 && p.z > LADDER.z0 && p.z < LADDER.z1;
-    const ladderBottom = floorY(this.lowestOpenFloor);
-    if (inLadder && this.feetY > ladderBottom - 0.05) this.mode = 'ladder';
-    else this.mode = 'walk';
+    const ladder = this.ladders.find(
+      (l) =>
+        p.x > l.x0 &&
+        p.x < l.x1 &&
+        p.z > l.z0 &&
+        p.z < l.z1 &&
+        this.feetY > l.bottom - 0.05 &&
+        this.feetY < l.top + 0.3,
+    );
+    this.mode = ladder ? 'ladder' : 'walk';
 
     // Desired horizontal velocity in world space.
     const sin = Math.sin(this.yaw);
@@ -128,9 +147,16 @@ export class FirstPersonController {
         this.mode = 'walk';
       }
       dy = this.vy * dt;
-      // Do not climb above the top floor's landing.
-      if (this.feetY + dy > floorY(0) + 0.05 && dy > 0) dy = Math.max(0, floorY(0) + 0.05 - this.feetY);
-      if (this.feetY + dy < ladderBottom && dy < 0) dy = ladderBottom - this.feetY;
+      // Step-off assist: moving sideways near a floor lifts/lowers you onto it.
+      if (Math.abs(intent.moveX) > 0.3) {
+        const nearest = -Math.round(-this.feetY / 4) * 4;
+        const diff = nearest + 0.03 - this.feetY;
+        if (Math.abs(diff) < 0.6) dy = Math.sign(diff) * Math.min(Math.abs(diff), 3 * dt);
+      }
+      // Stay within the ladder's span.
+      if (ladder && dy > 0 && this.feetY + dy > ladder.top + 0.05)
+        dy = Math.max(0, ladder.top + 0.05 - this.feetY);
+      if (ladder && dy < 0 && this.feetY + dy < ladder.bottom) dy = ladder.bottom - this.feetY;
     } else {
       const accel = this.grounded ? GROUND_ACCEL : AIR_ACCEL;
       this.vx += clampDelta(tx - this.vx, accel * dt);
@@ -146,34 +172,23 @@ export class FirstPersonController {
     }
 
     const c = this.phys.controller;
-    const car = this.phys.carCollider;
-    c.computeColliderMovement(
-      this.phys.playerCollider,
-      { x: this.vx * dt, y: dy, z: this.vz * dt },
-      undefined,
-      undefined,
-      (col) => col !== car,
-    );
+    c.computeColliderMovement(this.phys.playerCollider, { x: this.vx * dt, y: dy, z: this.vz * dt });
     const m = c.computedMovement();
     let ny = p.y + m.y;
     this.grounded = c.computedGrounded();
-    // Elevator car floor handled by hand (it moves every frame; KCC ignores it).
+    // Elevator car floors are handled by hand (they move every frame).
     const nx = p.x + m.x;
     const nz = p.z + m.z;
-    const inCar = nx > CAR.x0 && nx < CAR.x1 && nz > CAR.z0 && nz < CAR.z1;
     const off = this.phys.halfHeight + PLAYER_RADIUS;
     const newFeet = ny - off;
-    if (
-      this.mode === 'walk' &&
-      inCar &&
-      newFeet < carY + 0.02 &&
-      this.feetY > carY - 0.6 - Math.max(0, -carDeltaY)
-    ) {
-      ny = carY + off;
-      this.grounded = true;
-      if (this.vy < 0) this.vy = 0;
-    } else if (this.mode === 'walk' && inCar && Math.abs(this.feetY - carY) < 0.05 && carDeltaY > 0) {
-      ny = carY + off;
+    for (const car of this.cars) {
+      const inCar = nx > car.x0 && nx < car.x1 && nz > car.z0 && nz < car.z1;
+      if (!inCar || this.mode !== 'walk') continue;
+      if (newFeet < car.y + 0.02 && this.feetY > car.y - 0.6 - Math.max(0, -car.dy)) {
+        ny = car.y + off;
+        this.grounded = true;
+        if (this.vy < 0) this.vy = 0;
+      } else if (Math.abs(this.feetY - car.y) < 0.05 && car.dy > 0) ny = car.y + off;
     }
     this.phys.playerBody.setTranslation({ x: nx, y: ny, z: nz }, true);
     if (this.grounded && this.vy > 0 && m.y < this.vy * dt * 0.5) this.vy = 0;
@@ -181,9 +196,7 @@ export class FirstPersonController {
     // Safety net: a long fall (e.g. into the elevator shaft) puts you back on the nearest landing.
     if (this.grounded || this.mode === 'ladder') this.fallStart = this.feetY;
     else if (this.fallStart - this.feetY > 4.5) {
-      const f = Math.max(0, Math.round(-this.fallStart / GEO.floorPitch));
-      this.teleport(0.6, floorY(f), -2.6, this.yaw);
-      this.fallStart = floorY(f);
+      this.onFall?.(Math.max(0, levelAtY(this.fallStart + 0.1)));
       return;
     }
     const hs = Math.hypot(this.vx, this.vz);

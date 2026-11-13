@@ -27,7 +27,7 @@ export function buildTabletView(w: World): TabletView {
         description: d.traits[t]?.description ?? '',
       })),
       assignedRoomId: s.assignedRoom,
-      floor: s.floor + 1,
+      floor: (s.climb !== undefined ? Math.round(s.climb) : s.level) + 1,
     })),
     rooms: st.rooms.map((r) => {
       const def = d.rooms[r.type]!;
@@ -36,16 +36,16 @@ export function buildTabletView(w: World): TabletView {
         name: def.name,
         short: def.short,
         color: def.color,
-        floor: w.slot(r.slotIds[0]!)!.floor + 1,
+        floor: Math.max(...r.cellIds.map((id) => w.cell(id)!.y)) + 1,
         tier: r.tier,
-        width: r.slotIds.length,
+        width: r.cellIds.length,
         damaged: r.damaged,
         enabled: r.enabled,
         priority: r.priority,
         powered: r.powered,
         temp: r.temp,
         workers: [...r.workers],
-        capacity: def.tiers[r.tier - 1]!.workersPerCell * r.slotIds.length,
+        capacity: w.roomOpen(r) ? def.tiers[r.tier - 1]!.workersPerCell * r.cellIds.length : 0,
         skill: def.skill ? (d.skills[def.skill]?.name ?? def.skill) : null,
       };
     }),

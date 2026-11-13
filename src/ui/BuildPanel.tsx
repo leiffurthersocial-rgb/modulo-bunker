@@ -17,8 +17,8 @@ export function BuildPanel(p: BuildPanelProps) {
   return (
     <div class="build-panel panel" data-testid="build-panel">
       <div class="build-head">
-        <h3>Build</h3>
-        <span class="dim">E / tap: primary action · wheel or 1-9: room type</span>
+        <h3>Manage</h3>
+        <span class="dim">E: first action · chips: refit target</span>
         <button class="close-x" onClick={p.onClose} aria-label="Close build mode">
           ✕
         </button>
@@ -54,7 +54,7 @@ export function BuildPanel(p: BuildPanelProps) {
                   title={a.reason ?? ''}
                 >
                   <span>
-                    {a.label} <kbd>{a.key}</kbd>
+                    {a.label} {a.key && <kbd>{a.key}</kbd>}
                   </span>
                   <small>{a.ok ? fmtCost(a.cost) : a.reason}</small>
                 </button>

@@ -7,8 +7,10 @@ import { EventBus, SPEEDS, TICK_REAL_SECONDS, applyCommand, step } from '../sim'
 import type { Command, Speed, World } from '../sim';
 
 export interface Snapshot {
+  /** y is a (fractional) level. */
   survivors: { id: number; x: number; z: number; y: number }[];
-  elevator: number;
+  /** Car position (level) per elevator shaft id. */
+  elevators: Record<number, number>;
 }
 
 export class SimRunner {
@@ -112,14 +114,19 @@ export class SimRunner {
 
   private snapshot(): Snapshot {
     const st = this.world.state;
+    const elevators: Record<number, number> = {};
+    for (const e of st.elevators) elevators[e.shaftId] = e.pos;
     return {
       survivors: st.survivors.map((s) => ({
         id: s.id,
         x: s.x,
         z: s.z,
-        y: s.elevator === 'riding' ? st.elevator.pos : s.floor,
+        y:
+          s.elevator === 'riding' && s.elevatorId !== null
+            ? (elevators[s.elevatorId] ?? s.level)
+            : (s.climb ?? s.level),
       })),
-      elevator: st.elevator.pos,
+      elevators,
     };
   }
 }

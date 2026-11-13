@@ -1,74 +1,97 @@
 import * as THREE from 'three';
 import type { World } from '../sim';
 import { GEO } from '../sim/core/state';
-import { floorY } from '../sim/core/geometry';
-import { GENERATED_FLOORS } from '../gen/bunker';
-import { makeLabel } from './labels';
+import { LADDER_SIZE, cellX0, cellZ0, doorPoint, floorY } from '../sim/core/geometry';
+import { wellOf } from './actorsView';
 
 export type InteractTag =
-  | { kind: 'callButton'; floor: number }
-  | { kind: 'carPanel' }
-  | { kind: 'unsealFloor'; floor: number }
+  | { kind: 'callButton'; shaftId: number; level: number }
+  | { kind: 'carPanel'; shaftId: number }
+  | { kind: 'bulkhead'; linkId: number }
+  | { kind: 'shaft'; shaftId: number }
+  | { kind: 'machine'; id: number }
   | { kind: 'survivor'; id: number };
 
-/** Interactive greybox panels: landing call buttons and floor-unseal panels. */
+/**
+ * Interactive greybox elements: elevator call buttons on every landing, and invisible hit boxes
+ * on sealed bulkheads and broken ladders (so you interact with the thing itself).
+ */
 export class PanelsView {
   readonly root = new THREE.Group();
   readonly callButtons: THREE.Mesh[] = [];
-  private unseal = new Map<number, THREE.Group>();
+  private hits = new THREE.Group();
   private mat = new THREE.MeshStandardMaterial({ color: '#3fbf5f', emissive: '#0d3a17', roughness: 0.5 });
-  private sealMat = new THREE.MeshStandardMaterial({ color: '#e0b73a', emissive: '#3a2a05', roughness: 0.5 });
+  private hitMat = new THREE.MeshBasicMaterial({ visible: false });
+  private sig = '';
 
   constructor(private world: World) {
     const geo = new THREE.BoxGeometry(0.3, 0.4, 0.08);
-    for (let f = 0; f < GENERATED_FLOORS; f++) {
-      const m = new THREE.Mesh(geo, this.mat);
-      // On the shaft-side post to the right of the gate, facing the landing (-z side).
-      m.position.set(GEO.shaftWidth / 2 - 0.35, floorY(f) + 1.25, -0.3);
-      m.userData.interact = { kind: 'callButton', floor: f } satisfies InteractTag;
-      this.callButtons.push(m);
-      this.root.add(m);
+    for (const sh of world.state.shafts.filter((s) => s.kind === 'elevator')) {
+      const well = wellOf(sh);
+      for (let y = sh.top; y <= sh.bottom; y++) {
+        const cell = world.cellAt(sh.x, y, sh.z);
+        if (!cell || world.linksOf(cell.id).length === 0) continue; // no landing here
+        const m = new THREE.Mesh(geo, this.mat);
+        m.position.set(well.x1 + 0.25, floorY(y) + 1.25, well.z0 - 0.3);
+        m.userData.interact = { kind: 'callButton', shaftId: sh.id, level: y } satisfies InteractTag;
+        this.callButtons.push(m);
+        this.root.add(m);
+      }
     }
+    this.root.add(this.hits);
     this.sync();
   }
 
-  /** Show an unseal panel on the lowest open floor if the floor below is sealed. */
+  /** Rebuild hit boxes for sealed bulkheads and broken ladders when they change. */
   sync(): void {
-    const st = this.world.state;
-    let lowest = 0;
-    while (st.floors[lowest + 1]?.state === 'open') lowest++;
-    const target = st.floors[lowest + 1]?.state === 'sealed' ? lowest : -1;
-    for (const [f, g] of this.unseal) {
-      if (f !== target) {
-        this.root.remove(g);
-        this.unseal.delete(f);
-      }
+    const w = this.world;
+    const sig =
+      w.state.links
+        .filter((l) => l.sealed)
+        .map((l) => l.id)
+        .join(',') +
+      '|' +
+      w.state.shafts
+        .filter((s) => s.broken)
+        .map((s) => s.id)
+        .join(',');
+    if (sig === this.sig) return;
+    this.sig = sig;
+    for (const c of [...this.hits.children]) {
+      this.hits.remove(c);
+      (c as THREE.Mesh).geometry.dispose();
     }
-    if (target >= 0 && !this.unseal.has(target)) {
-      const g = new THREE.Group();
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.7, 0.1), this.sealMat);
-      panel.userData.interact = { kind: 'unsealFloor', floor: target + 1 } satisfies InteractTag;
-      g.add(panel);
-      const lbl = makeLabel(
-        [
-          { text: `Floor ${target + 2} below: sealed`, color: '#e0b73a' },
-          { text: 'E: unseal', size: 0.7 },
-        ],
-        0.35,
+    for (const l of w.state.links) {
+      if (!l.sealed) continue;
+      const a = w.cell(l.a)!;
+      const b = w.cell(l.b)!;
+      const p = doorPoint(a, b);
+      const alongX = a.z !== b.z;
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(alongX ? GEO.doorWidth : 0.4, GEO.doorHeight, alongX ? 0.4 : GEO.doorWidth),
+        this.hitMat,
       );
-      lbl.position.y = 0.6;
-      g.add(lbl);
-      g.position.set(0.6, floorY(target) + 1.4, -GEO.cellDepth / 2 + 0.06);
-      this.unseal.set(target, g);
-      this.root.add(g);
+      m.position.set(p.x, floorY(a.y) + GEO.doorHeight / 2, p.z);
+      m.userData.interact = { kind: 'bulkhead', linkId: l.id } satisfies InteractTag;
+      this.hits.add(m);
     }
-    for (let f = 0; f < this.callButtons.length; f++)
-      this.callButtons[f]!.visible = st.floors[f]?.state === 'open';
+    for (const s of w.state.shafts) {
+      if (!s.broken || s.kind !== 'ladder') continue;
+      const x0 = cellX0(s);
+      const z0 = cellZ0(s);
+      const top = floorY(s.top) + 1.6;
+      const bottom = floorY(s.bottom);
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(LADDER_SIZE + 0.4, top - bottom, LADDER_SIZE + 0.4),
+        this.hitMat,
+      );
+      m.position.set(x0 + LADDER_SIZE / 2, (top + bottom) / 2, z0 + LADDER_SIZE / 2);
+      m.userData.interact = { kind: 'shaft', shaftId: s.id } satisfies InteractTag;
+      this.hits.add(m);
+    }
   }
 
   interactables(): THREE.Object3D[] {
-    const out: THREE.Object3D[] = this.callButtons.filter((b) => b.visible);
-    for (const g of this.unseal.values()) out.push(g.children[0]!);
-    return out;
+    return [...this.callButtons, ...this.hits.children];
   }
 }

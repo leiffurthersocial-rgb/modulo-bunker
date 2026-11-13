@@ -9,7 +9,7 @@ import { freeSpot, stepLogistics, totalOf } from '../../src/sim/systems/logistic
 import { SEED } from './helpers';
 
 function lane(length: number, speed: number): Lane {
-  return { id: 1, floor: 0, points: [], length, items: [], gaps: [], speed, from: null, to: null };
+  return { id: 1, level: 0, points: [], length, items: [], gaps: [], speed, from: null, to: null };
 }
 
 function checkLane(l: Lane) {
@@ -71,13 +71,9 @@ describe('machines, belts and pipes', () => {
     const w = waterWorld();
     const plant = w.state.rooms.find((r) => r.type === 'water_plant')!;
     const s1 = freeSpot(w, plant.id, 'ice_melter')!;
-    expect(applyCommand(w, { type: 'placeMachine', roomId: plant.id, machine: 'ice_melter', ...s1 }).ok).toBe(
-      true,
-    );
+    expect(applyCommand(w, { type: 'placeMachine', machine: 'ice_melter', ...s1 }).ok).toBe(true);
     const s2 = freeSpot(w, plant.id, 'purifier')!;
-    expect(applyCommand(w, { type: 'placeMachine', roomId: plant.id, machine: 'purifier', ...s2 }).ok).toBe(
-      true,
-    );
+    expect(applyCommand(w, { type: 'placeMachine', machine: 'purifier', ...s2 }).ok).toBe(true);
     const [melter, purifier] = w.state.machines;
     expect(
       applyCommand(w, { type: 'connectBelt', from: { kind: 'room', id: plant.id }, toMachine: melter!.id })

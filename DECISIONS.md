@@ -67,3 +67,9 @@ You asked for a different structure, with rooms in any 3D direction, and for roo
 - **Size:** compact and interesting rather than big (the bunker holds at most 5 people). Target is roughly 20–30 rooms plus corridors and shafts, 4–6 levels deep. You start in a small working core (6–8 rooms, some damaged). The other sections are sealed: frozen (needs heat), dark (needs power), collapsed (repair), keycard (mystery). Reclaiming them is the progression.
 - **Rejected:** the Fallout Shelter strip (too predictable; you asked for something different), free-form prefab modules (hard to simulate and pathfind deterministically), and pure procedural noise (doesn't feel hand-made).
 - **Replaces:** the M1.2 central-shaft generator, slot chain, and build/merge/demolish commands. The sim core, resources, survivors, machines/lanes/pipes, UI shell and player controller are kept and adapted.
+
+## D-011 The bunker extends in all directions; first person is the main view (2026-11-13)
+
+- The core sits at **mid-depth** (its main level is level 3 of about 7). A ladder shaft rises to upper levels near the surface: the delivery hatch and a possible research annex go up there. The elevator goes down to the deep level, and wings attach on all four sides. Section placement is a seeded backtracking search, so every section always fits.
+- **First person is the game.** The dollhouse map (Tab) is a secondary planning view: orbit, zoom, level slicing, tap to select. Review screenshots lead with first person.
+- Greybox readability: emissive ceiling-light strips in open cells (none in sealed sections), and no room-sized outline in first person (the prompt names the room instead).

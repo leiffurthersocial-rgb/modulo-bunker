@@ -37,7 +37,7 @@ export interface Notice {
 export interface UiState {
   prompt: string | null;
   /** Elevator floor picker: list of selectable floors. */
-  floorPicker: { floors: { index: number; open: boolean }[]; current: number } | null;
+  floorPicker: { shaftId: number; floors: { index: number; open: boolean }[]; current: number } | null;
   notices: Notice[];
   mode: 'player' | 'overview';
   locked: boolean;

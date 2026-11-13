@@ -20,12 +20,13 @@ import { isTouchDevice, loadSettings, saveSettings } from '../input/settings';
 import type { Settings } from '../input/settings';
 import { App } from '../ui/App';
 import { pushNotice, ui } from '../ui/store';
-import { cellsXRange, floorY } from '../sim/core/geometry';
+import { LADDER_SIZE, cellCenter, cellX0, cellZ0, floorY } from '../sim/core/geometry';
 import { GEO } from '../sim/core/state';
-import { GENERATED_FLOORS } from '../gen/bunker';
-import { checkCommand } from '../sim';
 import { BuildMode } from './buildMode';
-import type { BuildAction } from './buildMode';
+import type { BuildAction, ManageTarget } from './buildMode';
+import { LogisticsView } from '../render/logisticsView';
+import { wellOf } from '../render/actorsView';
+import type { CarZone, LadderZone } from '../player/controller';
 import { Metrics, foodTotal } from './metrics';
 import { buildTabletView } from './tabletView';
 import { formatClock } from '../sim';
@@ -50,8 +51,10 @@ export class Game {
   readonly interactor: Interactor;
   target: Target = null;
   readonly build: BuildMode;
-  /** Cell selected by click/tap in overview mode. */
-  selectedSlot: number | null = null;
+  /** Target selected by click/tap in overview mode. */
+  selected: ManageTarget | null = null;
+  readonly logistics: LogisticsView;
+  private carLast = new Map<number, number>();
   private lastBuildJson = '';
   readonly metrics: Metrics;
   private uiAcc = 0;
@@ -63,7 +66,6 @@ export class Game {
   frameMs = 0;
   private last = performance.now();
   private frameHooks: ((dt: number) => void)[] = [];
-  private lastCarY = 0;
   private lastHoldTick = -1;
   private tmpBox = new THREE.Box3();
   private releasingLock = false;
@@ -89,14 +91,16 @@ export class Game {
     this.metrics = new Metrics(this.world);
     this.rig = new SceneRig(container);
     this.bunker = new BunkerView(this.world);
-    this.bunker.onFloorBuilt = (f, boxes) => this.phys.setFloorBoxes(f, boxes);
-    for (const [f, boxes] of this.bunker.colliders) this.phys.setFloorBoxes(f, boxes);
+    this.bunker.onLevelBuilt = (y, boxes) => this.phys.setLevelBoxes(y, boxes);
+    for (const [y, boxes] of this.bunker.colliders) this.phys.setLevelBoxes(y, boxes);
+    this.logistics = new LogisticsView(this.world);
     this.actors = new ActorsView(this.world);
     this.panels = new PanelsView(this.world);
     this.interactor = new Interactor(this.world);
     this.build = new BuildMode(this.world);
     this.rig.scene.add(
       this.bunker.root,
+      this.logistics.root,
       this.actors.root,
       this.panels.root,
       this.interactor.highlight,
@@ -105,8 +109,8 @@ export class Game {
     this.rig.renderer.domElement.addEventListener(
       'wheel',
       (e) => {
-        if (this.mode === 'overview' && !this.build.active) {
-          this.overview.distance = Math.max(10, Math.min(60, this.overview.distance + e.deltaY * 0.02));
+        if (this.mode === 'overview') {
+          this.overview.distance = Math.max(10, Math.min(70, this.overview.distance + e.deltaY * 0.03));
         } else if (this.build.active) this.cycleBuildType(e.deltaY > 0 ? 1 : -1);
         e.preventDefault();
       },
@@ -130,7 +134,11 @@ export class Game {
 
     this.player = new FirstPersonController(this.phys);
     this.phys.step(); // register static colliders in the query pipeline before the first move
-    this.player.teleport(0.6, floorY(0), -2.6, Math.PI);
+    this.player.onFall = (level) => this.spawnPlayer(level);
+    this.spawnPlayer(this.world.state.survivors[0]?.level ?? 0);
+    const sp = this.player.position;
+    this.overview.x = sp.x;
+    this.overview.z = sp.z;
     this.rig.camera.fov = settings.fov;
     this.rig.camera.updateProjectionMatrix();
 
@@ -175,7 +183,8 @@ export class Game {
         },
         hud: {
           pickFloor: (f: number) => {
-            this.command({ type: 'callElevator', floor: f });
+            const pk = ui.get().floorPicker;
+            if (pk) this.command({ type: 'callElevator', shaftId: pk.shaftId, level: f });
             this.closePicker();
           },
           closePicker: () => this.closePicker(),
@@ -267,7 +276,10 @@ export class Game {
     if (mode === 'overview') {
       this.releasingLock = this.input.locked;
       this.input.releaseLock();
-      this.overview.floor = Math.max(0.5, this.player.floor);
+      this.overview.level = this.player.level;
+      const p = this.player.position;
+      this.overview.x = p.x;
+      this.overview.z = p.z;
       this.interactor.highlight.visible = false;
       ui.set({ prompt: null });
     }
@@ -306,7 +318,7 @@ export class Game {
     if (this.uiAcc < 0.25) return;
     this.uiAcc = 0;
     const st = this.world.state;
-    const temps = st.rooms.filter((r) => !r.damaged && w.roomOpen(r)).map((r) => r.temp);
+    const temps = st.rooms.filter((r) => !r.damaged && this.world.roomOpen(r)).map((r) => r.temp);
     ui.set({
       resources: {
         clock: formatClock(st.tick),
@@ -355,7 +367,7 @@ export class Game {
     const st = this.world.state;
     switch (cmd) {
       case 'help':
-        return 'speed <0|0.5|1|4|10|100> · give <item> <qty> · unlock [all|slotId] · tp <floor> · noclip · overlay · survivors · seed';
+        return 'speed <0|0.5|1|4|10|100> · give <item> <qty> · unlock (all sections) · keycard · tp <level> · noclip · overlay · survivors · seed';
       case 'speed':
         this.runner.setSpeed(Number(args[0]) as SpeedT);
         return `speed x${args[0]}`;
@@ -365,20 +377,15 @@ export class Game {
         this.command({ type: 'debug.give', items: [{ item, qty: Number(args[1] ?? 50) }] });
         return `gave ${args[1] ?? 50} ${item}`;
       }
-      case 'unlock': {
-        const ids =
-          args[0] && args[0] !== 'all'
-            ? [Number(args[0])]
-            : st.slots
-                .filter((s) => s.state === 'sealed' && s.floor < 10 && s.seal?.hiddenRoom !== 'airlock')
-                .map((s) => s.id);
-        for (const id of ids) this.command({ type: 'debug.unlockSlot', slotId: id });
-        return `unlocked ${ids.length} slot(s)`;
-      }
+      case 'unlock':
+        for (const s of st.sections) this.command({ type: 'debug.openSection', sectionId: s.id });
+        return `opened ${st.sections.length} sections`;
+      case 'keycard':
+        this.command({ type: 'debug.setFlag', flag: 'keycard:any', value: true });
+        return 'keycard granted';
       case 'tp': {
-        const f = Number(args[0] ?? 0);
-        this.player.teleport(0.6, floorY(f), -2.6, this.player.yaw);
-        return `teleported to floor ${f + 1}`;
+        this.spawnPlayer(Number(args[0] ?? 0));
+        return `teleported to level ${Number(args[0] ?? 0) + 1}`;
       }
       case 'noclip':
         this.player.noclip = !this.player.noclip;
@@ -390,7 +397,7 @@ export class Game {
         return st.survivors
           .map(
             (s) =>
-              `${s.name}: ${s.action} hp${s.health.toFixed(0)} hunger${s.needs.hunger!.toFixed(0)} thirst${s.needs.thirst!.toFixed(0)}`,
+              `${s.name}: ${s.action} L${s.level + 1} hp${s.health.toFixed(0)} hunger${s.needs.hunger!.toFixed(0)}`,
           )
           .join(' | ');
       case 'seed':
@@ -398,6 +405,16 @@ export class Game {
       default:
         return `unknown command: ${cmd}`;
     }
+  }
+
+  /** Puts the player in a walkable open cell on a level (corridor preferred). */
+  spawnPlayer(level: number): void {
+    const w = this.world;
+    const cells = w.state.cells.filter((c) => c.y === level && w.cellOpen(c) && c.kind !== 'shaft');
+    const c =
+      cells.find((x) => x.kind === 'corridor') ?? cells[0] ?? w.state.cells.find((x) => w.cellOpen(x))!;
+    const p = cellCenter(c);
+    this.player.teleport(p.x + 0.7, floorY(c.y), p.z + 0.7, this.player.yaw);
   }
 
   setBuild(on: boolean): void {
@@ -420,16 +437,28 @@ export class Game {
     const c = this.build.trigger(a);
     this.lastBuildJson = '';
     if (c) this.command(c);
-    else if (a.id === 'demolish') pushNotice('Press demolish again to confirm', 'warn');
+    else if (a.id === 'remove') pushNotice('Press remove again to confirm', 'warn');
   }
 
-  /** Per-frame build-mode update: target analysis -> UI (only when changed), ghost. */
+  /** Current manage-mode target: overview selection, or what the crosshair is on. */
+  private manageTarget(): ManageTarget | null {
+    if (this.mode === 'overview') return this.selected;
+    const t = this.target;
+    if (!t) return null;
+    if (t.kind === 'cell') {
+      const p = this.player.position;
+      return { kind: 'cell', cellId: t.cellId, point: { x: p.x, z: p.z } };
+    }
+    if (t.kind === 'bulkhead' || t.kind === 'shaft' || t.kind === 'machine') return t;
+    return null;
+  }
+
+  /** Per-frame manage-mode update: target analysis -> UI (only when changed), highlight. */
   private updateBuild(): void {
     if (!this.build.active) return;
-    const slotId =
-      this.mode === 'overview' ? this.selectedSlot : this.target?.kind === 'cell' ? this.target.slotId : null;
-    const info = this.build.analyze(slotId);
-    this.build.updateGhost(info);
+    const mt = this.manageTarget();
+    const info = this.build.analyze(mt);
+    this.build.updateGhost(mt);
     const payload = { options: this.build.options(), selected: this.build.selected, target: info };
     const json = JSON.stringify(payload);
     if (json !== this.lastBuildJson) {
@@ -437,32 +466,33 @@ export class Game {
       ui.set({ build: payload });
     }
     const i = this.input;
-    for (let d = 1; d <= 9; d++)
-      if (i.codePressed(`Digit${d}`)) {
-        const o = this.build.options()[d - 1];
-        if (o) this.build.selected = o.id;
-      }
     if (!info) return;
-    const byKey = (k: string) => info.actions.find((a) => a.key === k);
-    for (const k of ['U', 'M', 'R', 'X'])
-      if (i.codePressed(`Key${k}`)) {
-        const a = byKey(k);
-        if (a) this.triggerBuild(a);
-      }
+    for (const a of info.actions)
+      if (
+        a.key &&
+        a.key.length === 1 &&
+        i.codePressed(/\d/.test(a.key) ? `Digit${a.key}` : `Key${a.key}`) &&
+        a.key !== 'E'
+      )
+        this.triggerBuild(a);
   }
 
   private closePicker(): void {
     ui.set({ floorPicker: null });
     this.input.enabled = true;
-    this.input.requestLock();
+    if (this.mode === 'player') this.input.requestLock();
   }
 
-  private openPicker(): void {
-    const st = this.world.state;
+  private openPicker(shaftId: number): void {
+    const w = this.world;
+    const sh = w.shaft(shaftId)!;
     const floors = [];
-    for (let f = 0; f < GENERATED_FLOORS; f++)
-      floors.push({ index: f, open: st.floors[f]!.state === 'open' });
-    ui.set({ floorPicker: { floors, current: this.player.floor } });
+    for (let y = sh.top; y <= sh.bottom; y++) {
+      const cell = w.cellAt(sh.x, y, sh.z);
+      const landing = !!cell && w.linksOf(cell.id).some((l) => !l.sealed);
+      floors.push({ index: y, open: landing && !sh.broken });
+    }
+    ui.set({ floorPicker: { shaftId, floors, current: this.player.level } });
     this.input.enabled = false;
     this.releasingLock = this.input.locked;
     this.input.releaseLock();
@@ -482,42 +512,38 @@ export class Game {
     this.bunker.sync();
     this.bunker.update();
     this.panels.sync();
+    this.logistics.update();
+    this.actors.hideAbove = this.mode === 'overview' ? this.overview.level : null;
     this.actors.update(this.runner.prev, this.runner.cur, this.runner.alpha);
-
-    // Elevator car + gates into physics.
-    const carY = this.actors.car.position.y;
-    const carDelta = carY - this.lastCarY;
-    this.lastCarY = carY;
-    this.phys.setCarY(carY);
-    for (let f = 0; f < GENERATED_FLOORS; f++) this.phys.setGateOpen(f, this.actors.gateOpen(f));
+    this.updatePhysicsZones();
 
     const intent = this.input.intent();
     this.lastClick = intent.click;
-    // Step first: (re)built colliders and the car become queryable before the player moves.
+    // Step first: (re)built colliders become queryable before the player moves.
     this.phys.step();
     if (this.mode === 'player') {
-      this.player.lowestOpenFloor = this.lowestOpenFloor();
-      this.player.update(intent, dt, carY, carDelta);
+      this.player.update(intent, dt);
       const e = this.player.eye();
       const cam = this.rig.camera;
       cam.position.set(e.x, e.y, e.z);
       cam.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
-      this.bunker.setFocus(this.player.floor);
+      this.bunker.setFocus(this.player.level);
       this.holdElevatorIfInDoorway();
       this.updateTarget();
     } else {
       this.updateOverviewCamera(intent, dt);
       if (intent.click) {
-        const t = this.interactor.pick(this.rig.camera, [this.bunker.root], [], intent.click, 120);
-        this.selectedSlot = t?.kind === 'cell' ? t.slotId : null;
-        if (this.selectedSlot !== null && !this.build.active) this.setBuild(true);
+        const t = this.interactor.pick(
+          this.rig.camera,
+          [this.bunker.root],
+          [...this.panels.interactables(), ...this.logistics.interactables()],
+          intent.click,
+          150,
+        );
+        this.selected = this.toManage(t);
+        if (this.selected && !this.build.active) this.setBuild(true);
       }
-      const box = this.selectedSlot !== null ? this.cellBox(this.selectedSlot) : null;
-      this.interactor.showHighlight(
-        box ? { kind: 'cell', slotId: this.selectedSlot!, distance: 0 } : null,
-        () => null,
-        () => box,
-      );
+      if (!this.build.active) this.interactor.highlight.visible = false;
     }
     this.updateBuild();
     this.metrics.update();
@@ -528,10 +554,46 @@ export class Game {
     this.frameMs = performance.now() - t0;
   }
 
-  private lowestOpenFloor(): number {
-    let f = 0;
-    while (this.world.state.floors[f + 1]?.state === 'open') f++;
-    return f;
+  private toManage(t: Target): ManageTarget | null {
+    if (!t) return null;
+    if (t.kind === 'cell') return { kind: 'cell', cellId: t.cellId };
+    if (t.kind === 'bulkhead' || t.kind === 'shaft' || t.kind === 'machine') return t;
+    if (t.kind === 'callButton' || t.kind === 'carPanel') return { kind: 'shaft', shaftId: t.shaftId };
+    return null;
+  }
+
+  /** Elevator floors, gates and ladders for the player controller and physics. */
+  private updatePhysicsZones(): void {
+    const w = this.world;
+    const cars: CarZone[] = [];
+    for (const car of this.actors.cars) {
+      const sh = w.shaft(car.shaftId)!;
+      const well = wellOf(sh);
+      const y = car.group.position.y;
+      const last = this.carLast.get(car.shaftId) ?? y;
+      this.carLast.set(car.shaftId, y);
+      cars.push({ x0: well.x0, x1: well.x1, z0: well.z0, z1: well.z1, y, dy: y - last });
+      for (const lvl of car.gates.keys()) {
+        const gy = floorY(lvl);
+        this.phys.setGate(
+          `${sh.id}:${lvl}`,
+          { x0: well.x0, x1: well.x1, y0: gy, y1: gy + 3, z0: well.z0 - 0.09, z1: well.z0 },
+          this.actors.gateOpen(sh.id, lvl),
+        );
+      }
+    }
+    const ladders: LadderZone[] = w.state.shafts
+      .filter((s) => s.kind === 'ladder' && !s.broken)
+      .map((s) => ({
+        x0: cellX0(s),
+        x1: cellX0(s) + LADDER_SIZE,
+        z0: cellZ0(s),
+        z1: cellZ0(s) + LADDER_SIZE,
+        bottom: floorY(s.bottom),
+        top: floorY(s.top),
+      }));
+    this.player.cars = cars;
+    this.player.ladders = ladders;
   }
 
   private handleGlobalKeys(): void {
@@ -548,18 +610,21 @@ export class Game {
       this.openPause();
       return;
     }
-    if (ui.get().floorPicker) {
+    const picker = ui.get().floorPicker;
+    if (picker) {
       if (i.codePressed('Escape')) this.closePicker();
-      for (let d = 0; d <= 9; d++)
+      for (let d = 1; d <= 9; d++)
         if (i.codePressed(`Digit${d}`)) {
-          const f = d === 0 ? 9 : d - 1;
-          if (this.world.state.floors[f]?.state === 'open') {
-            this.command({ type: 'callElevator', floor: f });
+          const f = picker.floors.find((x) => x.index === d - 1);
+          if (f?.open) {
+            this.command({ type: 'callElevator', shaftId: picker.shaftId, level: f.index });
             this.closePicker();
           }
         }
       return;
     }
+    if (i.wasPressed('tablet')) this.setTablet(!this.tabletOpen);
+    if (this.tabletOpen) return;
     if (i.wasPressed('overview')) this.setMode(this.mode === 'player' ? 'overview' : 'player');
     if (i.wasPressed('speedUp')) this.runner.cycleSpeed(1);
     if (i.wasPressed('speedDown')) this.runner.cycleSpeed(-1);
@@ -568,16 +633,15 @@ export class Game {
       this.debugOpen = !this.debugOpen;
       if (!this.debugOpen) ui.set({ debug: null });
     }
-    if (i.wasPressed('tablet')) this.setTablet(!this.tabletOpen);
-    if (this.tabletOpen) {
-      if (i.codePressed('Escape')) this.setTablet(false);
-      return;
-    }
     if (i.wasPressed('build')) this.setBuild(!this.build.active);
+    if (this.mode === 'overview') {
+      if (i.codePressed('KeyQ')) this.overview.level = Math.max(0, this.overview.level - 1);
+      if (i.codePressed('KeyE') && !this.build.active)
+        this.overview.level = Math.min(this.bunker.maxLevel, this.overview.level + 1);
+    }
     if (i.wasPressed('interact') || (this.build.active && this.mode === 'player' && this.lastClick)) {
       if (this.build.active) {
-        const info = ui.get().build?.target;
-        const a = info?.actions[0];
+        const a = ui.get().build?.target?.actions.find((x) => x.ok) ?? ui.get().build?.target?.actions[0];
         if (a) this.triggerBuild(a);
       } else if (this.mode === 'player') this.interact();
     }
@@ -585,35 +649,43 @@ export class Game {
 
   private holdElevatorIfInDoorway(): void {
     const p = this.player.position;
-    const f = this.player.floor;
-    const el = this.world.state.elevator;
-    const inDoor = Math.abs(p.x) < 1.9 && p.z > -1.0 && p.z < 0.6;
-    if (
-      inDoor &&
-      el.target === null &&
-      Math.abs(el.pos - f) < 1e-6 &&
-      el.doorTicks > 0 &&
-      this.lastHoldTick !== this.world.state.tick
-    ) {
-      this.lastHoldTick = this.world.state.tick;
-      this.command({ type: 'holdElevator', floor: f });
+    for (const car of this.actors.cars) {
+      const sh = this.world.shaft(car.shaftId)!;
+      const well = wellOf(sh);
+      const lvl = this.player.level;
+      const el = this.world.elevator(sh.id)!;
+      const inDoor = p.x > well.x0 && p.x < well.x1 && p.z > well.z0 - 0.8 && p.z < well.z0 + 0.6;
+      if (
+        inDoor &&
+        el.target === null &&
+        Math.abs(el.pos - lvl) < 1e-6 &&
+        el.doorTicks > 0 &&
+        this.lastHoldTick !== this.world.state.tick
+      ) {
+        this.lastHoldTick = this.world.state.tick;
+        this.command({ type: 'holdElevator', shaftId: sh.id, level: lvl });
+      }
     }
   }
 
   private updateTarget(): void {
-    const solids = [this.bunker.root];
     const inter = [
       ...this.panels.interactables(),
-      this.actors.car.getObjectByName('elevator-panel')!,
+      ...this.actors.cars.map((c) => c.panel),
       ...this.survivorMeshes(),
+      ...this.logistics.interactables(),
     ];
-    this.target = this.input.enabled ? this.interactor.pick(this.rig.camera, solids, inter) : null;
-    this.interactor.showHighlight(
-      this.target,
-      (t) => this.objectFor(t),
-      (slotId) => this.cellBox(slotId),
-    );
-    ui.set({ prompt: this.promptFor(this.target) });
+    this.target = this.input.enabled
+      ? this.interactor.pick(this.rig.camera, [this.bunker.root], inter)
+      : null;
+    if (this.build.active || this.target?.kind === 'cell') this.interactor.highlight.visible = false;
+    else
+      this.interactor.showHighlight(
+        this.target,
+        (t) => this.objectFor(t),
+        (cellId) => this.cellBox(cellId),
+      );
+    ui.set({ prompt: this.build.active ? null : this.promptFor(this.target) });
   }
 
   private survivorMeshes(): THREE.Object3D[] {
@@ -622,26 +694,49 @@ export class Game {
 
   private objectFor(t: Target): THREE.Object3D | null {
     if (!t) return null;
-    if (t.kind === 'callButton') return this.panels.callButtons[t.floor] ?? null;
-    if (t.kind === 'carPanel') return this.actors.car.getObjectByName('elevator-panel') ?? null;
-    if (t.kind === 'survivor')
-      return this.survivorMeshes().find((o) => o.userData.survivorId === t.id)?.children[0] ?? null;
-    if (t.kind === 'unsealFloor')
-      return this.panels.interactables().find((o) => o.userData.interact?.kind === 'unsealFloor') ?? null;
-    return null;
+    const find = (objs: THREE.Object3D[], pred: (o: THREE.Object3D) => boolean) => objs.find(pred) ?? null;
+    switch (t.kind) {
+      case 'callButton':
+        return find(
+          this.panels.callButtons,
+          (o) => o.userData.interact.shaftId === t.shaftId && o.userData.interact.level === t.level,
+        );
+      case 'carPanel':
+        return this.actors.cars.find((c) => c.shaftId === t.shaftId)?.panel ?? null;
+      case 'survivor':
+        return find(this.survivorMeshes(), (o) => o.userData.survivorId === t.id)?.children[0] ?? null;
+      case 'machine':
+        return find(this.logistics.interactables(), (o) => o.userData.interact.id === t.id);
+      case 'bulkhead':
+      case 'shaft':
+        return find(this.panels.interactables(), (o) => {
+          const it = o.userData.interact;
+          return (
+            it?.kind === t.kind && (t.kind === 'bulkhead' ? it.linkId === t.linkId : it.shaftId === t.shaftId)
+          );
+        });
+      default:
+        return null;
+    }
   }
 
-  cellBox(slotId: number): THREE.Box3 | null {
-    const s = this.world.slot(slotId);
-    if (!s) return null;
-    const r = this.world.room(s.roomId);
-    const idx = r ? r.slotIds.map((id) => this.world.slot(id)!.index) : [s.index];
-    const [x0, x1] = cellsXRange(s.side, idx);
-    const y0 = floorY(s.floor);
-    return this.tmpBox.set(
-      new THREE.Vector3(x0 + 0.05, y0 + 0.02, -GEO.cellDepth / 2 + 0.05),
-      new THREE.Vector3(x1 - 0.05, y0 + GEO.cellHeight - 0.05, GEO.cellDepth / 2 - 0.05),
-    );
+  cellBox(cellId: number): THREE.Box3 | null {
+    const c = this.world.cell(cellId);
+    if (!c) return null;
+    const r = this.world.room(c.roomId);
+    const cells = r ? r.cellIds.map((id) => this.world.cell(id)!) : [c];
+    const box = this.tmpBox.makeEmpty();
+    for (const cc of cells) {
+      box.expandByPoint(new THREE.Vector3(cellX0(cc) + 0.05, floorY(cc.y) + 0.02, cellZ0(cc) + 0.05));
+      box.expandByPoint(
+        new THREE.Vector3(
+          cellX0(cc) + GEO.cell - 0.05,
+          floorY(cc.y) + GEO.cellHeight - 0.05,
+          cellZ0(cc) + GEO.cell - 0.05,
+        ),
+      );
+    }
+    return box;
   }
 
   private promptFor(t: Target): string | null {
@@ -651,31 +746,33 @@ export class Game {
       case 'callButton':
         return 'E: call elevator';
       case 'carPanel':
-        return 'E: choose floor';
-      case 'unsealFloor': {
-        const cost = w.defs.balance.openFloorCost.map((c) => `${c.qty} ${c.item}`).join(', ');
-        return `E: unseal floor ${t.floor + 1} (${cost})`;
+        return 'E: choose level';
+      case 'bulkhead': {
+        const l = w.state.links.find((x) => x.id === t.linkId);
+        return l?.seal ? `${l.seal.label}\nE: open (B for details)` : null;
+      }
+      case 'shaft':
+        return 'Broken ladder · E: repair';
+      case 'machine': {
+        const m = w.state.machines.find((x) => x.id === t.id);
+        return m ? `${w.defs.machines[m.type]!.name} · ${(m.progress * 100).toFixed(0)}%\nE: manage` : null;
       }
       case 'survivor': {
         const s = w.survivor(t.id)!;
-        return `${s.name} · ${s.action} · health ${s.health.toFixed(0)}`;
+        return `${s.name} · ${s.action} · health ${s.health.toFixed(0)}\nE: tablet`;
       }
       case 'cell': {
-        const s = w.slot(t.slotId)!;
-        const r = w.room(s.roomId);
-        if (s.state === 'sealed') {
-          const ok = checkCommand(w, { type: 'openSeal', slotId: s.id });
-          return ok.ok ? 'E: open sealed cell' : `Sealed: ${ok.reason}`;
-        }
-        if (r?.damaged) {
+        const c = w.cell(t.cellId)!;
+        const r = w.room(c.roomId);
+        if (!r) return null;
+        if (!w.roomOpen(r)) return `${w.defs.rooms[r.type]!.name} (sealed section)`;
+        if (r.damaged) {
           const cost = w.defs.balance.repairCostPerCell
-            .map((c) => `${c.qty * r.slotIds.length} ${c.item}`)
+            .map((x) => `${x.qty * r.cellIds.length} ${x.item}`)
             .join(', ');
-          return `${w.defs.rooms[r.type]!.name} (damaged)\nE: repair (${cost})`;
+          return `${w.defs.rooms[r.type]!.name} (damaged)\nE: repair (${cost}) · B: manage`;
         }
-        if (r) return `${w.defs.rooms[r.type]!.name} T${r.tier}`;
-        if (s.state === 'empty') return 'Empty cell · B: build';
-        return null;
+        return `${w.defs.rooms[r.type]!.name} T${r.tier} · B: manage`;
       }
     }
   }
@@ -685,20 +782,24 @@ export class Game {
     if (!t) return;
     switch (t.kind) {
       case 'callButton':
-        this.command({ type: 'callElevator', floor: t.floor });
+        this.command({ type: 'callElevator', shaftId: t.shaftId, level: t.level });
         pushNotice('Elevator called');
         break;
       case 'carPanel':
-        this.openPicker();
+        this.openPicker(t.shaftId);
         break;
-      case 'unsealFloor':
-        this.command({ type: 'openFloor', floor: t.floor });
+      case 'bulkhead':
+        this.command({ type: 'openBulkhead', linkId: t.linkId });
+        break;
+      case 'shaft':
+        this.command({ type: 'repairShaft', shaftId: t.shaftId });
+        break;
+      case 'machine':
+        this.setBuild(true);
         break;
       case 'cell': {
-        const s = this.world.slot(t.slotId)!;
-        const r = this.world.room(s.roomId);
-        if (s.state === 'sealed') this.command({ type: 'openSeal', slotId: s.id });
-        else if (r?.damaged) this.command({ type: 'repair', roomId: r.id });
+        const r = this.world.room(this.world.cell(t.cellId)?.roomId);
+        if (r?.damaged) this.command({ type: 'repair', roomId: r.id });
         break;
       }
       case 'survivor':
@@ -709,15 +810,11 @@ export class Game {
 
   private updateOverviewCamera(intent: ReturnType<InputManager['intent']>, dt: number): void {
     const o = this.overview;
-    const want = this.build.active ? o.distance * 0.16 : 0;
-    o.panelOffset += (want - o.panelOffset) * Math.min(1, dt * 8);
-    const k = o.distance / 900;
-    o.x = Math.max(-26, Math.min(26, o.x + intent.moveX * dt * 14 - intent.lookDX * k * 400));
-    o.floor = Math.max(
-      0,
-      Math.min(GENERATED_FLOORS - 1, o.floor - intent.moveZ * dt * 2.5 - intent.lookDY * k * 100),
-    );
+    // Drag rotates (yaw) and tilts; WASD / stick pans; Q/E change level; wheel zooms.
+    o.yaw -= intent.lookDX * 1.2;
+    o.pitch = Math.max(0.45, Math.min(1.45, o.pitch + intent.lookDY * 1.2));
+    o.pan(intent.moveX * dt * 16, intent.moveZ * dt * 16);
     o.apply(this.rig.camera);
-    this.bunker.setFocus(o.floor);
+    this.bunker.setFocus(o.level);
   }
 }

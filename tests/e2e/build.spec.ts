@@ -1,38 +1,32 @@
 import { expect, test } from '@playwright/test';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-test('build a room from the overview build panel', async ({ page }) => {
+test('refit the empty bay through the manage panel', async ({ page }) => {
   test.setTimeout(60_000);
-  await page.goto('/?seed=ember-07&view=overview');
+  await page.goto('/?seed=ember-07');
   await page.waitForFunction(() => (window as any).__game !== undefined);
-  const slotId = await page.evaluate(() => {
+  const roomId = await page.evaluate(() => {
     const G = (window as any).__game;
-    const s = G.world.state.slots.find((x: any) => x.state === 'empty' && x.floor === 0);
-    G.selectedSlot = s.id;
+    const r = G.world.state.rooms.find((x: any) => x.type === 'empty');
+    G.setMode('overview');
+    G.selected = { kind: 'cell', cellId: r.cellIds[0] };
     G.setBuild(true);
-    return s.id;
+    return r.id;
   });
-  await page
-    .getByTestId('build-panel')
-    .getByRole('button', { name: /^COMMON/ })
-    .click();
-  const build = page.getByTestId('build-panel').getByRole('button', { name: /Build Common room/ });
-  await expect(build).toBeEnabled();
-  await build.click();
-  await page.waitForFunction((id) => (window as any).__game.world.slot(id).state === 'room', slotId, {
+  const panel = page.getByTestId('build-panel');
+  await panel.getByRole('button', { name: /^FARM/ }).click();
+  const refit = panel.getByRole('button', { name: /Refit → Hydroponics farm/ });
+  await expect(refit).toBeEnabled();
+  await refit.click();
+  await page.waitForFunction((id) => (window as any).__game.world.room(id).type === 'hydroponics', roomId, {
     timeout: 10_000,
   });
-  const type = await page.evaluate((id) => {
-    const G = (window as any).__game;
-    return G.world.room(G.world.slot(id).roomId).type;
-  }, slotId);
-  expect(type).toBe('common');
-  await expect(page.getByTestId('build-panel')).toContainText('Common room T1');
+  await expect(panel).toContainText('Hydroponics farm T1');
 });
 
 test('assign a survivor to a room through the tablet', async ({ page }) => {
   test.setTimeout(60_000);
-  await page.goto('/?seed=ember-07&view=overview');
+  await page.goto('/?seed=ember-07');
   await page.waitForFunction(() => (window as any).__game !== undefined);
   const { name, kitchenId } = await page.evaluate(() => {
     const G = (window as any).__game;

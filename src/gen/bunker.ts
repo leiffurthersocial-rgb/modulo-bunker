@@ -26,6 +26,7 @@ interface TemplateBase {
   shafts?: Record<string, { broken?: boolean; repairCost?: { item: string; qty: number }[] }>;
 }
 interface CoreTemplate extends TemplateBase {
+  spawnLevel: number;
   ports: { at: number[]; dir: string }[];
 }
 interface SectionTemplate extends TemplateBase {
@@ -264,12 +265,14 @@ export function generateBunker(seed: string, defs: Defs): SimState {
   }
 
   const survivors = rollSurvivors(seed, defs, () => nextId++);
-  // Spawn in core corridor cells on level 0.
-  const spawn = cells.filter((c) => c.sectionId === core.id && c.kind === 'corridor' && c.y === 0);
+  // Spawn in core corridor cells on the core's main level (mid-depth: the bunker extends above too).
+  const spawn = cells.filter(
+    (c) => c.sectionId === core.id && c.kind === 'corridor' && c.y === CORE.spawnLevel,
+  );
   survivors.forEach((s, i) => {
     const c = spawn[i % spawn.length]!;
     const p = cellCenter(c);
-    s.level = 0;
+    s.level = c.y;
     s.x = p.x + ((i % 2) - 0.5) * 1.2;
     s.z = p.z + (i > 1 ? 1 : -1) * 0.8;
   });
