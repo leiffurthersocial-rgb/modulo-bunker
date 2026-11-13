@@ -4,7 +4,10 @@
       "id": "ice_melter",
       "name": "Ice melter",
       "color": "#9fd3f0",
-      "size": { "w": 2, "d": 2 },
+      "size": {
+        "w": 2,
+        "d": 2
+      },
       "powerDraw": 5,
       "wearPerHour": 0.004,
       "inputSlots": 1,
@@ -13,15 +16,24 @@
       "recipes": ["melt_ice"],
       "allowedRooms": ["water_plant"],
       "cost": [
-        { "item": "scrap", "qty": 12 },
-        { "item": "parts", "qty": 6 }
+        {
+          "item": "scrap",
+          "qty": 12
+        },
+        {
+          "item": "parts",
+          "qty": 6
+        }
       ]
     },
     {
       "id": "purifier",
       "name": "Water purifier",
       "color": "#4fb3e8",
-      "size": { "w": 2, "d": 2 },
+      "size": {
+        "w": 2,
+        "d": 2
+      },
       "powerDraw": 4,
       "wearPerHour": 0.005,
       "inputSlots": 1,
@@ -30,8 +42,14 @@
       "recipes": ["purify_water"],
       "allowedRooms": ["water_plant"],
       "cost": [
-        { "item": "scrap", "qty": 10 },
-        { "item": "parts", "qty": 8 }
+        {
+          "item": "scrap",
+          "qty": 10
+        },
+        {
+          "item": "parts",
+          "qty": 8
+        }
       ]
     }
   ],
@@ -39,19 +57,60 @@
     {
       "id": "melt_ice",
       "machine": "ice_melter",
-      "inputs": [{ "item": "ice", "qty": 1 }],
-      "outputs": [{ "item": "raw_water", "qty": 1 }],
+      "inputs": [
+        {
+          "item": "ice",
+          "qty": 1
+        }
+      ],
+      "outputs": [
+        {
+          "item": "raw_water",
+          "qty": 1
+        }
+      ],
       "seconds": 360
     },
     {
       "id": "purify_water",
       "machine": "purifier",
-      "inputs": [{ "item": "raw_water", "qty": 2 }],
-      "outputs": [{ "item": "water", "qty": 2 }],
+      "inputs": [
+        {
+          "item": "raw_water",
+          "qty": 2
+        }
+      ],
+      "outputs": [
+        {
+          "item": "water",
+          "qty": 2
+        }
+      ],
       "seconds": 480
     }
   ],
   "conveyors": [
-    { "id": "belt_mk1", "itemsPerMinute": 6, "speed": 0.25, "cost": [{ "item": "scrap", "qty": 1 }] }
-  ]
+    {
+      "id": "belt_mk1",
+      "metresPerTick": 0.1,
+      "costPerMetre": [
+        {
+          "item": "scrap",
+          "qty": 0.5
+        }
+      ]
+    }
+  ],
+  "pipes": {
+    "costPerMetre": [
+      {
+        "item": "scrap",
+        "qty": 0.5
+      }
+    ],
+    "capacity": 20
+  },
+  "handling": {
+    "handTicks": 30
+  }
 }

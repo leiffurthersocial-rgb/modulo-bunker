@@ -117,11 +117,15 @@ export interface MachineDef {
 
 export interface ConveyorTierDef {
   id: string;
-  /** Items per game minute at full flow. */
-  itemsPerMinute: number;
-  /** Belt speed in metres per game second. */
-  speed: number;
-  cost: ItemStack[];
+  /** Belt speed in metres per sim tick (0.1 m/tick = 1 m per real second at x1). */
+  metresPerTick: number;
+  costPerMetre: ItemStack[];
+}
+
+export interface PipeDef {
+  costPerMetre: ItemStack[];
+  /** Units a pipe network can hold. */
+  capacity: number;
 }
 
 export interface SkillDef {
@@ -198,6 +202,9 @@ export interface Defs {
   machines: Record<MachineTypeId, MachineDef>;
   recipes: Record<string, RecipeDef>;
   conveyors: ConveyorTierDef[];
+  pipes: PipeDef;
+  /** Ticks per item a worker moves between the store and an unconnected machine port. */
+  handTicks: number;
   skills: Record<SkillId, SkillDef>;
   needs: Record<string, NeedDef>;
   traits: Record<string, TraitDef>;

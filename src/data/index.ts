@@ -19,6 +19,8 @@ export function loadDefs(): Defs {
     machines: byId(machines.machines as MachineDef[]),
     recipes: byId(machines.recipes as RecipeDef[]),
     conveyors: machines.conveyors,
+    pipes: machines.pipes,
+    handTicks: machines.handling.handTicks,
     skills: byId(survivors.skills as SkillDef[]),
     needs: byId(survivors.needs as NeedDef[]),
     traits: byId(survivors.traits as TraitDef[]),

@@ -3,7 +3,21 @@
  * balance runner, replays). They are applied at the start of a tick in queue order.
  */
 import type { ItemStack, RoomTypeId } from '../../data/types';
-import type { Room, Slot } from './state';
+import type { PortRef, Room, Slot } from './state';
+import {
+  canPlaceMachine,
+  hopperPort,
+  inputConnected,
+  makeLane,
+  machinePort,
+  roomXRange,
+  outputConnected,
+  polylineLength,
+  recipeOf,
+  roomFloor,
+  route,
+  tankPort,
+} from '../systems/logistics';
 import { give, has, take } from './store';
 import type { World } from './world';
 
@@ -21,6 +35,15 @@ export type Command =
   | { type: 'callElevator'; floor: number }
   /** Keeps the car's doors open while someone stands in the doorway. */
   | { type: 'holdElevator'; floor: number }
+  | { type: 'placeMachine'; roomId: number; machine: string; gx: number; gz: number }
+  | { type: 'removeMachine'; machineId: number }
+  | { type: 'repairMachine'; machineId: number }
+  /** Belt from a room hopper (store) or a machine output to a machine input. */
+  | { type: 'connectBelt'; from: PortRef; toMachine: number }
+  /** Pipe from a machine's liquid output to a machine input or the room's tank (store). */
+  | { type: 'connectPipe'; fromMachine: number; toMachine: number | 'tank' }
+  | { type: 'removeLane'; laneId: number }
+  | { type: 'removePipe'; pipeId: number }
   | { type: 'debug.give'; items: ItemStack[] }
   | { type: 'debug.unlockSlot'; slotId: number }
   | { type: 'debug.setFlag'; flag: string; value: boolean };
@@ -137,6 +160,10 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       if (!apply) return OK;
       const keep = a.id < b.id ? a : b;
       const gone = keep === a ? b : a;
+      // Remember machine world positions; the merged room's grid origin may move.
+      const moved = st.machines
+        .filter((m) => m.roomId === a.id || m.roomId === b.id)
+        .map((m) => ({ m, x: roomXRange(w, w.room(m.roomId)!)[0] + m.gx }));
       const slots = [...keep.slotIds, ...gone.slotIds]
         .map((id) => w.slot(id)!)
         .sort((x, y) => x.index - y.index);
@@ -148,7 +175,11 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
         if (sv) sv.assignedRoom = keep.id;
         keep.workers.push(sid);
       }
-      for (const m of st.machines) if (m.roomId === gone.id) m.roomId = keep.id;
+      const nx0 = roomXRange(w, keep)[0];
+      for (const { m, x } of moved) {
+        m.roomId = keep.id;
+        m.gx = Math.round(x - nx0);
+      }
       st.rooms = st.rooms.filter((r) => r !== gone);
       w.markTopologyChanged();
       w.emit({ type: 'room.merged', roomId: keep.id, absorbedRoomId: gone.id });
@@ -167,6 +198,20 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       }
       for (const m of st.machines.filter((m) => m.roomId === r.id)) {
         give(w, w.defs.machines[m.type]!.cost, refund);
+      }
+      for (const m of st.machines.filter((m) => m.roomId === r.id)) {
+        for (const l of st.lanes.filter(
+          (l) =>
+            (l.from?.kind === 'machine' && l.from.id === m.id) ||
+            (l.to?.kind === 'machine' && l.to.id === m.id) ||
+            (l.from?.kind === 'room' && l.from.id === r.id),
+        ))
+          dropLane(w, l.id);
+        for (const p of st.pipes.filter(
+          (p) =>
+            p.producers.some((x) => x.machineId === m.id) || p.consumers.some((x) => x.machineId === m.id),
+        ))
+          dropPipe(w, p.id);
       }
       st.machines = st.machines.filter((m) => m.roomId !== r.id);
       for (const id of r.slotIds) {
@@ -267,6 +312,145 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       if (apply) el.doorTicks = Math.max(el.doorTicks, 3);
       return OK;
     }
+    case 'placeMachine': {
+      const err = canPlaceMachine(w, c.roomId, c.machine, c.gx, c.gz);
+      if (err) return fail(err);
+      if (!apply) return OK;
+      const def = w.defs.machines[c.machine]!;
+      take(w, def.cost);
+      st.machines.push({
+        id: w.nextId(),
+        type: c.machine,
+        roomId: c.roomId,
+        gx: c.gx,
+        gz: c.gz,
+        rot: 0,
+        recipe: def.recipes[0]!,
+        inputs: {},
+        outputs: {},
+        progress: 0,
+        wear: 0,
+        enabled: true,
+        powered: 0,
+      });
+      w.emit({ type: 'notice', text: `${def.name} placed`, severity: 'info' });
+      return OK;
+    }
+    case 'removeMachine': {
+      const m = st.machines.find((x) => x.id === c.machineId);
+      if (!m) return fail('No such machine');
+      if (!apply) return OK;
+      // Return buffered items, refund half the cost, drop its connections.
+      for (const [it, q] of Object.entries(m.inputs)) give(w, [{ item: it, qty: q }]);
+      for (const [it, q] of Object.entries(m.outputs)) give(w, [{ item: it, qty: q }]);
+      give(w, w.defs.machines[m.type]!.cost, w.defs.balance.demolishRefund);
+      for (const l of st.lanes.filter(
+        (l) =>
+          (l.from?.kind === 'machine' && l.from.id === m.id) ||
+          (l.to?.kind === 'machine' && l.to.id === m.id),
+      ))
+        dropLane(w, l.id);
+      for (const p of st.pipes.filter(
+        (p) => p.producers.some((x) => x.machineId === m.id) || p.consumers.some((x) => x.machineId === m.id),
+      ))
+        dropPipe(w, p.id);
+      st.machines = st.machines.filter((x) => x !== m);
+      return OK;
+    }
+    case 'repairMachine': {
+      const m = st.machines.find((x) => x.id === c.machineId);
+      if (!m) return fail('No such machine');
+      if (m.wear < 0.05) return fail('Not worn');
+      const cost = [{ item: 'parts', qty: m.wear >= 1 ? 2 : 1 }];
+      if (!has(w, cost)) return fail('Needs parts');
+      if (apply) {
+        take(w, cost);
+        m.wear = 0;
+      }
+      return OK;
+    }
+    case 'connectBelt': {
+      const to = st.machines.find((x) => x.id === c.toMachine);
+      if (!to) return fail('No target machine');
+      if (inputConnected(w, to)) return fail('Input already connected');
+      const rec = recipeOf(w, to);
+      const conveyable = rec.inputs.find((i) => w.defs.items[i.item]?.conveyable);
+      if (!conveyable) return fail('Input is a liquid: use a pipe');
+      let a: { x: number; z: number };
+      let floor: number;
+      if (c.from.kind === 'room') {
+        const r = w.room(c.from.id);
+        if (!r) return fail('No such room');
+        a = hopperPort(w, r);
+        floor = roomFloor(w, r);
+      } else if (c.from.kind === 'machine') {
+        const src = c.from;
+        const m = st.machines.find((x) => x.id === src.id);
+        if (!m) return fail('No source machine');
+        if (outputConnected(w, m)) return fail('Output already connected');
+        const out = recipeOf(w, m).outputs[0]!;
+        if (!w.defs.items[out.item]?.conveyable) return fail('Output is a liquid: use a pipe');
+        if (out.item !== conveyable.item) return fail(`Target needs ${conveyable.item}`);
+        a = machinePort(w, m, 'out');
+        floor = roomFloor(w, w.room(m.roomId)!);
+      } else return fail('Bad source');
+      if (roomFloor(w, w.room(to.roomId)!) !== floor)
+        return fail('Same floor only (item elevator comes later)');
+      const b = machinePort(w, to, 'in');
+      const pts = route(a, b, c.from.kind === 'room' ? 0 : 1, -1);
+      const cost = scale(w.defs.conveyors[0]!.costPerMetre, Math.ceil(polylineLength(pts)));
+      if (!has(w, cost)) return fail('Not enough materials');
+      if (!apply) return OK;
+      take(w, cost);
+      st.lanes.push(makeLane(w, w.nextId(), floor, pts, c.from, { kind: 'machine', id: to.id, slot: 0 }));
+      return OK;
+    }
+    case 'connectPipe': {
+      const src = st.machines.find((x) => x.id === c.fromMachine);
+      if (!src) return fail('No source machine');
+      if (outputConnected(w, src)) return fail('Output already connected');
+      const out = recipeOf(w, src).outputs[0]!;
+      if (w.defs.items[out.item]?.conveyable) return fail('Output is an item: use a belt');
+      const floor = roomFloor(w, w.room(src.roomId)!);
+      const a = machinePort(w, src, 'out');
+      let b: { x: number; z: number };
+      let consumers: { machineId: number }[] = [];
+      if (c.toMachine === 'tank') b = tankPort(w, w.room(src.roomId)!);
+      else {
+        const dst = st.machines.find((x) => x.id === c.toMachine);
+        if (!dst || dst === src) return fail('No target machine');
+        if (inputConnected(w, dst)) return fail('Input already connected');
+        if (!recipeOf(w, dst).inputs.some((i) => i.item === out.item))
+          return fail(`Target does not take ${out.item}`);
+        if (roomFloor(w, w.room(dst.roomId)!) !== floor) return fail('Same floor only');
+        b = machinePort(w, dst, 'in');
+        consumers = [{ machineId: dst.id }];
+      }
+      const pts = route(a, b, 1, c.toMachine === 'tank' ? 0 : -1);
+      const cost = scale(w.defs.pipes.costPerMetre, Math.ceil(polylineLength(pts)));
+      if (!has(w, cost)) return fail('Not enough materials');
+      if (!apply) return OK;
+      take(w, cost);
+      st.pipes.push({
+        id: w.nextId(),
+        fluid: out.item,
+        volume: 0,
+        capacity: w.defs.pipes.capacity,
+        segments: pts.slice(1).map((p, i) => ({ floor, x1: pts[i]!.x, z1: pts[i]!.z, x2: p.x, z2: p.z })),
+        producers: [{ machineId: src.id }],
+        consumers,
+        toStore: c.toMachine === 'tank',
+      });
+      return OK;
+    }
+    case 'removeLane':
+      if (!st.lanes.some((l) => l.id === c.laneId)) return fail('No such belt');
+      if (apply) dropLane(w, c.laneId);
+      return OK;
+    case 'removePipe':
+      if (!st.pipes.some((p) => p.id === c.pipeId)) return fail('No such pipe');
+      if (apply) dropPipe(w, c.pipeId);
+      return OK;
     case 'debug.give':
       if (apply) for (const s of c.items) st.store[s.item] = (st.store[s.item] ?? 0) + s.qty;
       return OK;
@@ -288,6 +472,20 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
       if (apply) st.flags[c.flag] = c.value;
       return OK;
   }
+}
+
+/** Removes a lane, returning its items to the store. */
+function dropLane(w: World, id: number): void {
+  const l = w.state.lanes.find((x) => x.id === id);
+  if (!l) return;
+  for (const it of l.items) give(w, [{ item: it, qty: 1 }]);
+  w.state.lanes = w.state.lanes.filter((x) => x !== l);
+}
+function dropPipe(w: World, id: number): void {
+  const p = w.state.pipes.find((x) => x.id === id);
+  if (!p) return;
+  if (p.volume > 0) give(w, [{ item: p.fluid, qty: p.volume }]);
+  w.state.pipes = w.state.pipes.filter((x) => x !== p);
 }
 
 /** A sealed cell can be opened only if every cell between it and the shaft is open (not sealed/rock). */
