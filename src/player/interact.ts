@@ -5,9 +5,7 @@ import { GEO } from '../sim/core/state';
 import type { World } from '../sim';
 
 export type Target =
-  | (InteractTag & { distance: number })
-  | { kind: 'cell'; slotId: number; distance: number }
-  | null;
+  (InteractTag & { distance: number }) | { kind: 'cell'; slotId: number; distance: number } | null;
 
 const PANEL_RANGE = 3.2;
 const SURVIVOR_RANGE = 5;
@@ -24,14 +22,23 @@ export class Interactor {
 
   constructor(private world: World) {
     const g = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
-    this.highlight = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: '#ffd84a', depthTest: false, transparent: true }));
+    this.highlight = new THREE.LineSegments(
+      g,
+      new THREE.LineBasicMaterial({ color: '#ffd84a', depthTest: false, transparent: true }),
+    );
     this.highlight.renderOrder = 20;
     this.highlight.visible = false;
   }
 
-  pick(camera: THREE.Camera, solids: THREE.Object3D[], interactables: THREE.Object3D[]): Target {
-    this.ray.setFromCamera(this.center, camera);
-    this.ray.far = CELL_RANGE;
+  pick(
+    camera: THREE.Camera,
+    solids: THREE.Object3D[],
+    interactables: THREE.Object3D[],
+    ndc: { x: number; y: number } = this.center,
+    far = CELL_RANGE,
+  ): Target {
+    this.ray.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), camera);
+    this.ray.far = far;
     const hits = this.ray.intersectObjects([...solids, ...interactables], true);
     for (const h of hits) {
       let o: THREE.Object3D | null = h.object;
@@ -42,10 +49,12 @@ export class Interactor {
         continue;
       }
       if (o?.userData.survivorId) {
-        if (h.distance <= SURVIVOR_RANGE) return { kind: 'survivor', id: o.userData.survivorId as number, distance: h.distance };
+        if (h.distance <= SURVIVOR_RANGE)
+          return { kind: 'survivor', id: o.userData.survivorId as number, distance: h.distance };
         continue;
       }
-      if ((h.object as THREE.Object3D & { isSprite?: boolean }).isSprite || h.object.type === "LineSegments") continue;
+      if ((h.object as THREE.Object3D & { isSprite?: boolean }).isSprite || h.object.type === 'LineSegments')
+        continue;
       // World geometry: nudge into the surface and find the cell.
       const p = h.point.clone().addScaledVector(this.ray.ray.direction, 0.05);
       const floor = Math.floor((-p.y + GEO.cellHeight) / GEO.floorPitch);
@@ -58,7 +67,11 @@ export class Interactor {
   }
 
   /** Positions the highlight box around a target. */
-  showHighlight(t: Target, objFor: (t: Target) => THREE.Object3D | null, cellBox: (slotId: number) => THREE.Box3 | null): void {
+  showHighlight(
+    t: Target,
+    objFor: (t: Target) => THREE.Object3D | null,
+    cellBox: (slotId: number) => THREE.Box3 | null,
+  ): void {
     const h = this.highlight;
     if (!t) {
       h.visible = false;

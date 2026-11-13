@@ -9,9 +9,11 @@ export class OverviewCamera {
   floor = 1;
   x = 0;
   distance = 24;
+  /** Extra downward look offset (m) so content sits above a bottom panel. */
+  panelOffset = 0;
 
   apply(cam: THREE.PerspectiveCamera): void {
-    const y = floorY(this.floor) + 1.75;
+    const y = floorY(this.floor) + 1.75 - this.panelOffset;
     cam.position.set(this.x, y + 2, this.distance);
     cam.lookAt(this.x, y, 0);
   }

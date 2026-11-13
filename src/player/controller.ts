@@ -17,7 +17,12 @@ const EYE_ABOVE_CENTER_CROUCH = 0.35;
 const COYOTE = 0.12;
 
 /** Ladder column (floor-local), matches the hole in the landing slab. */
-export const LADDER = { x0: -GEO.shaftWidth / 2, x1: -GEO.shaftWidth / 2 + 0.8, z0: -GEO.cellDepth / 2, z1: -GEO.cellDepth / 2 + 0.8 };
+export const LADDER = {
+  x0: -GEO.shaftWidth / 2,
+  x1: -GEO.shaftWidth / 2 + 0.8,
+  z0: -GEO.cellDepth / 2,
+  z1: -GEO.cellDepth / 2 + 0.8,
+};
 
 export type MoveMode = 'walk' | 'ladder';
 
@@ -31,6 +36,8 @@ export class FirstPersonController {
   grounded = false;
   mode: MoveMode = 'walk';
   private sinceGround = 0;
+  /** Highest feet y since leaving the ground (fall-recovery safety net). */
+  private fallStart = 0;
   /** Lowest open floor (ladder bottom). Set by the game. */
   lowestOpenFloor = 0;
   /** Head-bob phase (render only). */
@@ -54,7 +61,10 @@ export class FirstPersonController {
   }
 
   teleport(x: number, feetY: number, z: number, yaw: number): void {
-    this.phys.playerBody.setTranslation({ x, y: feetY + this.phys.halfHeight + PLAYER_RADIUS + 0.02, z }, true);
+    this.phys.playerBody.setTranslation(
+      { x, y: feetY + this.phys.halfHeight + PLAYER_RADIUS + 0.02, z },
+      true,
+    );
     this.yaw = yaw;
     this.vx = this.vy = this.vz = 0;
   }
@@ -83,17 +93,15 @@ export class FirstPersonController {
     const rx = cos;
     const rz = -sin;
     const speed = this.phys.crouched ? CROUCH : intent.sprint ? SPRINT : WALK;
-    let tx = (fx * intent.moveZ + rx * intent.moveX) * speed;
-    let tz = (fz * intent.moveZ + rz * intent.moveX) * speed;
+    const tx = (fx * intent.moveZ + rx * intent.moveX) * speed;
+    const tz = (fz * intent.moveZ + rz * intent.moveX) * speed;
 
     let dy: number;
     if (this.mode === 'ladder') {
-      // W climbs up, S climbs down; small horizontal movement lets you step off at a floor.
+      // W climbs up, S climbs down. Only strafe moves horizontally (to step off onto a landing).
       this.vy = intent.moveZ * LADDER_SPEED;
-      tx *= 0.45;
-      tz *= 0.45;
-      this.vx = tx;
-      this.vz = tz;
+      this.vx = rx * intent.moveX * WALK * 0.5;
+      this.vz = rz * intent.moveX * WALK * 0.5;
       if (intent.jump) {
         this.vx = -fx * 2.5;
         this.vz = -fz * 2.5;
@@ -136,16 +144,29 @@ export class FirstPersonController {
     const inCar = nx > CAR.x0 && nx < CAR.x1 && nz > CAR.z0 && nz < CAR.z1;
     const off = this.phys.halfHeight + PLAYER_RADIUS;
     const newFeet = ny - off;
-    if (this.mode === 'walk' && inCar && newFeet < carY + 0.02 && this.feetY > carY - 0.6 - Math.max(0, -carDeltaY)) {
+    if (
+      this.mode === 'walk' &&
+      inCar &&
+      newFeet < carY + 0.02 &&
+      this.feetY > carY - 0.6 - Math.max(0, -carDeltaY)
+    ) {
       ny = carY + off;
       this.grounded = true;
       if (this.vy < 0) this.vy = 0;
     } else if (this.mode === 'walk' && inCar && Math.abs(this.feetY - carY) < 0.05 && carDeltaY > 0) {
       ny = carY + off;
     }
-    this.phys.playerBody.setNextKinematicTranslation({ x: nx, y: ny, z: nz });
+    this.phys.playerBody.setTranslation({ x: nx, y: ny, z: nz }, true);
     if (this.grounded && this.vy > 0 && m.y < this.vy * dt * 0.5) this.vy = 0;
     if (Math.abs(m.y) < Math.abs(dy) * 0.5 && dy > 0) this.vy = Math.min(this.vy, 0); // bonk head
+    // Safety net: a long fall (e.g. into the elevator shaft) puts you back on the nearest landing.
+    if (this.grounded || this.mode === 'ladder') this.fallStart = this.feetY;
+    else if (this.fallStart - this.feetY > 4.5) {
+      const f = Math.max(0, Math.round(-this.fallStart / GEO.floorPitch));
+      this.teleport(0.6, floorY(f), -2.6, this.yaw);
+      this.fallStart = floorY(f);
+      return;
+    }
     const hs = Math.hypot(this.vx, this.vz);
     if (this.grounded && hs > 0.5) this.bob += dt * hs * 2.2;
   }

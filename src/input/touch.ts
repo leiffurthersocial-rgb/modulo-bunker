@@ -11,6 +11,7 @@ export class TouchControls {
   private lookId = -1;
   private stickOrigin = { x: 0, y: 0 };
   private lastLook = { x: 0, y: 0 };
+  private lookStart = { x: 0, y: 0, t: 0 };
   private knob: HTMLDivElement;
   private base: HTMLDivElement;
   private crouchOn = false;
@@ -76,6 +77,7 @@ export class TouchControls {
       this.lookId = e.pointerId;
       look.setPointerCapture(e.pointerId);
       this.lastLook = { x: e.clientX, y: e.clientY };
+      this.lookStart = { x: e.clientX, y: e.clientY, t: performance.now() };
     });
     look.addEventListener('pointermove', (e) => {
       if (e.pointerId !== this.lookId) return;
@@ -84,7 +86,12 @@ export class TouchControls {
       this.lastLook = { x: e.clientX, y: e.clientY };
     });
     const endLook = (e: PointerEvent) => {
-      if (e.pointerId === this.lookId) this.lookId = -1;
+      if (e.pointerId !== this.lookId) return;
+      this.lookId = -1;
+      // A short tap without dragging is a click (select / interact target in overview & build).
+      const d = Math.abs(e.clientX - this.lookStart.x) + Math.abs(e.clientY - this.lookStart.y);
+      if (e.type === 'pointerup' && d < 10 && performance.now() - this.lookStart.t < 350)
+        this.input.clickAt(e.clientX, e.clientY);
     };
     look.addEventListener('pointerup', endLook);
     look.addEventListener('pointercancel', endLook);

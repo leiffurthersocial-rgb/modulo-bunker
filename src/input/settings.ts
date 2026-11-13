@@ -47,7 +47,13 @@ export const DEFAULT_KEYS: Record<Action, string[]> = {
 const KEY = 'modulo.settings.v1';
 
 export function defaultSettings(): Settings {
-  return { sensitivity: 1, fov: 75, invertY: false, touchControls: 'auto', keys: structuredClone(DEFAULT_KEYS) };
+  return {
+    sensitivity: 1,
+    fov: 75,
+    invertY: false,
+    touchControls: 'auto',
+    keys: structuredClone(DEFAULT_KEYS),
+  };
 }
 
 export function loadSettings(): Settings {

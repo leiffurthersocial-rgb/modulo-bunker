@@ -1,3 +1,4 @@
+import type { BuildOption, BuildTargetInfo } from '../app/buildMode';
 import { useEffect, useState } from 'preact/hooks';
 
 /** Minimal observable store for UI state (no framework lock-in, testable). */
@@ -39,6 +40,8 @@ export interface UiState {
   locked: boolean;
   pointerLockSupported: boolean;
   showTouch: boolean;
+  paused: boolean;
+  build: { options: BuildOption[]; selected: string; target: BuildTargetInfo | null } | null;
 }
 
 export const ui = new Store<UiState>({
@@ -49,6 +52,8 @@ export const ui = new Store<UiState>({
   locked: false,
   pointerLockSupported: true,
   showTouch: false,
+  paused: false,
+  build: null,
 });
 
 let noticeId = 1;

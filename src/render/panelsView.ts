@@ -49,14 +49,21 @@ export class PanelsView {
       const panel = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.7, 0.1), this.sealMat);
       panel.userData.interact = { kind: 'unsealFloor', floor: target + 1 } satisfies InteractTag;
       g.add(panel);
-      const lbl = makeLabel([{ text: `Floor ${target + 2} below: sealed`, color: '#e0b73a' }, { text: 'E: unseal', size: 0.7 }], 0.35);
+      const lbl = makeLabel(
+        [
+          { text: `Floor ${target + 2} below: sealed`, color: '#e0b73a' },
+          { text: 'E: unseal', size: 0.7 },
+        ],
+        0.35,
+      );
       lbl.position.y = 0.6;
       g.add(lbl);
       g.position.set(0.6, floorY(target) + 1.4, -GEO.cellDepth / 2 + 0.06);
       this.unseal.set(target, g);
       this.root.add(g);
     }
-    for (let f = 0; f < this.callButtons.length; f++) this.callButtons[f]!.visible = st.floors[f]?.state === 'open';
+    for (let f = 0; f < this.callButtons.length; f++)
+      this.callButtons[f]!.visible = st.floors[f]?.state === 'open';
   }
 
   interactables(): THREE.Object3D[] {

@@ -3,7 +3,7 @@ import { render, h } from 'preact';
 import { loadDefs } from '../data';
 import { validateDefs } from '../data/validate';
 import { newWorld } from '../sim';
-import type { Command, World } from '../sim';
+import type { Command, Speed, World } from '../sim';
 import { SimRunner } from './simRunner';
 import { SceneRig } from '../render/scene';
 import { BunkerView } from '../render/bunkerView';
@@ -16,13 +16,16 @@ import { Interactor } from '../player/interact';
 import type { Target } from '../player/interact';
 import { InputManager } from '../input/input';
 import { TouchControls } from '../input/touch';
-import { isTouchDevice, loadSettings } from '../input/settings';
-import { Hud } from '../ui/Hud';
+import { isTouchDevice, loadSettings, saveSettings } from '../input/settings';
+import type { Settings } from '../input/settings';
+import { App } from '../ui/App';
 import { pushNotice, ui } from '../ui/store';
 import { cellsXRange, floorY } from '../sim/core/geometry';
 import { GEO } from '../sim/core/state';
 import { GENERATED_FLOORS } from '../gen/bunker';
 import { checkCommand } from '../sim';
+import { BuildMode } from './buildMode';
+import type { BuildAction } from './buildMode';
 
 export const DEFAULT_SEED = 'ember-07';
 export type CameraMode = 'overview' | 'player';
@@ -41,6 +44,10 @@ export class Game {
   readonly player: FirstPersonController;
   readonly interactor: Interactor;
   target: Target = null;
+  readonly build: BuildMode;
+  /** Cell selected by click/tap in overview mode. */
+  selectedSlot: number | null = null;
+  private lastBuildJson = '';
   mode: CameraMode = 'player';
   frameMs = 0;
   private last = performance.now();
@@ -48,6 +55,8 @@ export class Game {
   private lastCarY = 0;
   private lastHoldTick = -1;
   private tmpBox = new THREE.Box3();
+  private releasingLock = false;
+  private lastClick: { x: number; y: number } | null = null;
 
   static async create(container: HTMLElement, seed: string): Promise<Game> {
     const phys = await PhysicsWorld.create();
@@ -73,17 +82,42 @@ export class Game {
     this.actors = new ActorsView(this.world);
     this.panels = new PanelsView(this.world);
     this.interactor = new Interactor(this.world);
-    this.rig.scene.add(this.bunker.root, this.actors.root, this.panels.root, this.interactor.highlight);
+    this.build = new BuildMode(this.world);
+    this.rig.scene.add(
+      this.bunker.root,
+      this.actors.root,
+      this.panels.root,
+      this.interactor.highlight,
+      this.build.ghost,
+    );
+    this.rig.renderer.domElement.addEventListener(
+      'wheel',
+      (e) => {
+        if (this.mode === 'overview' && !this.build.active) {
+          this.overview.distance = Math.max(10, Math.min(60, this.overview.distance + e.deltaY * 0.02));
+        } else if (this.build.active) this.cycleBuildType(e.deltaY > 0 ? 1 : -1);
+        e.preventDefault();
+      },
+      { passive: false },
+    );
 
     const settings = loadSettings();
     this.input = new InputManager(this.rig.renderer.domElement, settings);
     this.touch = new TouchControls(this.input);
-    const showTouch = settings.touchControls === 'on' || (settings.touchControls === 'auto' && isTouchDevice());
+    const showTouch =
+      settings.touchControls === 'on' || (settings.touchControls === 'auto' && isTouchDevice());
     this.touch.setVisible(showTouch);
     ui.set({ showTouch, pointerLockSupported: this.input.pointerLockSupported });
-    document.addEventListener('pointerlockchange', () => ui.set({ locked: this.input.locked }));
+    document.addEventListener('pointerlockchange', () => {
+      ui.set({ locked: this.input.locked });
+      // Losing the lock in first person (Esc) opens the pause menu, like most PC games.
+      if (!this.input.locked && this.mode === 'player' && !ui.get().floorPicker && !this.releasingLock)
+        this.openPause();
+      this.releasingLock = false;
+    });
 
     this.player = new FirstPersonController(this.phys);
+    this.phys.step(); // register static colliders in the query pipeline before the first move
     this.player.teleport(0.6, floorY(0), -2.6, Math.PI);
     this.rig.camera.fov = settings.fov;
     this.rig.camera.updateProjectionMatrix();
@@ -98,8 +132,18 @@ export class Game {
     root.id = 'ui-root';
     document.body.appendChild(root);
     render(
-      h(Hud, {
-        actions: {
+      h(App, {
+        seed: this.seed,
+        getSettings: () => this.input.settings,
+        build: {
+          select: (id: string) => {
+            this.build.selected = id;
+            this.lastBuildJson = '';
+          },
+          action: (a: BuildAction) => this.triggerBuild(a),
+          close: () => this.setBuild(false),
+        },
+        hud: {
           pickFloor: (f: number) => {
             this.command({ type: 'callElevator', floor: f });
             this.closePicker();
@@ -107,9 +151,61 @@ export class Game {
           closePicker: () => this.closePicker(),
           resume: () => this.input.requestLock(),
         },
+        pause: {
+          resume: () => this.closePause(),
+          copyLink: () => {
+            const url = `${location.origin}${location.pathname}?seed=${encodeURIComponent(this.seed)}`;
+            navigator.clipboard?.writeText(url).then(
+              () => pushNotice('Link copied'),
+              () => pushNotice(url),
+            );
+          },
+          applySettings: (s: Settings) => this.applySettings(s),
+          save: () => this.saveHooks.save(),
+          load: () => this.saveHooks.load(),
+          exportSave: () => this.saveHooks.exportSave(),
+          importSave: () => this.saveHooks.importSave(),
+          newGame: (seed: string) => {
+            location.search = `?seed=${encodeURIComponent(seed.trim() || DEFAULT_SEED)}`;
+          },
+        },
       }),
       root,
     );
+  }
+
+  /** Save/load wiring (filled in by app/saves.ts). */
+  saveHooks = {
+    save: () => pushNotice('Saving arrives in M1.8'),
+    load: () => pushNotice('Loading arrives in M1.8'),
+    exportSave: () => pushNotice('Export arrives in M1.8'),
+    importSave: () => pushNotice('Import arrives in M1.8'),
+  };
+
+  applySettings(s: Settings): void {
+    this.input.settings = s;
+    saveSettings(s);
+    this.rig.camera.fov = s.fov;
+    this.rig.camera.updateProjectionMatrix();
+    const showTouch = s.touchControls === 'on' || (s.touchControls === 'auto' && isTouchDevice());
+    this.touch.setVisible(showTouch);
+    ui.set({ showTouch });
+  }
+
+  private speedBeforePause: Speed = 1;
+  openPause(): void {
+    if (ui.get().paused) return;
+    this.speedBeforePause = this.runner.speed;
+    this.runner.setSpeed(0);
+    this.input.enabled = false;
+    this.input.releaseLock();
+    ui.set({ paused: true, prompt: null });
+  }
+  closePause(): void {
+    ui.set({ paused: false });
+    this.runner.setSpeed(this.speedBeforePause === 0 ? 1 : this.speedBeforePause);
+    this.input.enabled = true;
+    if (this.mode === 'player') this.input.requestLock();
   }
 
   private wireEvents(): void {
@@ -118,7 +214,9 @@ export class Game {
     bus.on('command.rejected', (e) => {
       if (e.command !== 'holdElevator') pushNotice(e.reason, 'warn');
     });
-    bus.on('power.brownout', (e) => pushNotice(`Brownout: priority ${e.shedPriority}+ rooms lost power`, 'danger'));
+    bus.on('power.brownout', (e) =>
+      pushNotice(`Brownout: priority ${e.shedPriority}+ rooms lost power`, 'danger'),
+    );
     bus.on('power.restored', () => pushNotice('Power restored', 'info'));
   }
 
@@ -134,13 +232,66 @@ export class Game {
   setMode(mode: CameraMode): void {
     this.mode = mode;
     this.bunker.setOverview(mode === 'overview');
+    this.input.lockOnClick = mode === 'player';
     ui.set({ mode });
     if (mode === 'overview') {
+      this.releasingLock = this.input.locked;
       this.input.releaseLock();
       this.overview.floor = Math.max(0.5, this.player.floor);
       this.interactor.highlight.visible = false;
       ui.set({ prompt: null });
     }
+  }
+
+  setBuild(on: boolean): void {
+    this.build.active = on;
+    this.lastBuildJson = '';
+    if (!on) {
+      ui.set({ build: null });
+      this.build.ghost.visible = false;
+    }
+  }
+
+  private cycleBuildType(dir: number): void {
+    const opts = this.build.options();
+    const i = opts.findIndex((o) => o.id === this.build.selected);
+    this.build.selected = opts[(i + dir + opts.length) % opts.length]!.id;
+    this.lastBuildJson = '';
+  }
+
+  private triggerBuild(a: BuildAction): void {
+    const c = this.build.trigger(a);
+    this.lastBuildJson = '';
+    if (c) this.command(c);
+    else if (a.id === 'demolish') pushNotice('Press demolish again to confirm', 'warn');
+  }
+
+  /** Per-frame build-mode update: target analysis -> UI (only when changed), ghost. */
+  private updateBuild(): void {
+    if (!this.build.active) return;
+    const slotId =
+      this.mode === 'overview' ? this.selectedSlot : this.target?.kind === 'cell' ? this.target.slotId : null;
+    const info = this.build.analyze(slotId);
+    this.build.updateGhost(info);
+    const payload = { options: this.build.options(), selected: this.build.selected, target: info };
+    const json = JSON.stringify(payload);
+    if (json !== this.lastBuildJson) {
+      this.lastBuildJson = json;
+      ui.set({ build: payload });
+    }
+    const i = this.input;
+    for (let d = 1; d <= 9; d++)
+      if (i.codePressed(`Digit${d}`)) {
+        const o = this.build.options()[d - 1];
+        if (o) this.build.selected = o.id;
+      }
+    if (!info) return;
+    const byKey = (k: string) => info.actions.find((a) => a.key === k);
+    for (const k of ['U', 'M', 'R', 'X'])
+      if (i.codePressed(`Key${k}`)) {
+        const a = byKey(k);
+        if (a) this.triggerBuild(a);
+      }
   }
 
   private closePicker(): void {
@@ -152,9 +303,11 @@ export class Game {
   private openPicker(): void {
     const st = this.world.state;
     const floors = [];
-    for (let f = 0; f < GENERATED_FLOORS; f++) floors.push({ index: f, open: st.floors[f]!.state === 'open' });
+    for (let f = 0; f < GENERATED_FLOORS; f++)
+      floors.push({ index: f, open: st.floors[f]!.state === 'open' });
     ui.set({ floorPicker: { floors, current: this.player.floor } });
     this.input.enabled = false;
+    this.releasingLock = this.input.locked;
     this.input.releaseLock();
   }
 
@@ -182,10 +335,12 @@ export class Game {
     for (let f = 0; f < GENERATED_FLOORS; f++) this.phys.setGateOpen(f, this.actors.gateOpen(f));
 
     const intent = this.input.intent();
+    this.lastClick = intent.click;
+    // Step first: (re)built colliders and the car become queryable before the player moves.
+    this.phys.step();
     if (this.mode === 'player') {
       this.player.lowestOpenFloor = this.lowestOpenFloor();
       this.player.update(intent, dt, carY, carDelta);
-      this.phys.step();
       const e = this.player.eye();
       const cam = this.rig.camera;
       cam.position.set(e.x, e.y, e.z);
@@ -194,9 +349,20 @@ export class Game {
       this.holdElevatorIfInDoorway();
       this.updateTarget();
     } else {
-      this.phys.step();
       this.updateOverviewCamera(intent, dt);
+      if (intent.click) {
+        const t = this.interactor.pick(this.rig.camera, [this.bunker.root], [], intent.click, 120);
+        this.selectedSlot = t?.kind === 'cell' ? t.slotId : null;
+        if (this.selectedSlot !== null && !this.build.active) this.setBuild(true);
+      }
+      const box = this.selectedSlot !== null ? this.cellBox(this.selectedSlot) : null;
+      this.interactor.showHighlight(
+        box ? { kind: 'cell', slotId: this.selectedSlot!, distance: 0 } : null,
+        () => null,
+        () => box,
+      );
     }
+    this.updateBuild();
     for (const fn of this.frameHooks) fn(dt);
     this.input.endFrame();
     this.rig.render();
@@ -211,6 +377,14 @@ export class Game {
 
   private handleGlobalKeys(): void {
     const i = this.input;
+    if (ui.get().paused) {
+      if (i.codePressed('KeyP') || i.codePressed('Escape')) this.closePause();
+      return;
+    }
+    if (i.wasPressed('pause')) {
+      this.openPause();
+      return;
+    }
     if (ui.get().floorPicker) {
       if (i.codePressed('Escape')) this.closePicker();
       for (let d = 0; d <= 9; d++)
@@ -226,13 +400,19 @@ export class Game {
     if (i.wasPressed('overview')) this.setMode(this.mode === 'player' ? 'overview' : 'player');
     if (i.wasPressed('speedUp')) this.runner.cycleSpeed(1);
     if (i.wasPressed('speedDown')) this.runner.cycleSpeed(-1);
-    if (i.codePressed('KeyP')) this.runner.togglePause();
     if (i.wasPressed('overlay')) {
       const order = ['none', 'power', 'heat'] as const;
       this.bunker.overlay = order[(order.indexOf(this.bunker.overlay) + 1) % order.length]!;
       pushNotice(`Overlay: ${this.bunker.overlay}`);
     }
-    if (this.mode === 'player' && i.wasPressed('interact')) this.interact();
+    if (i.wasPressed('build')) this.setBuild(!this.build.active);
+    if (i.wasPressed('interact') || (this.build.active && this.mode === 'player' && this.lastClick)) {
+      if (this.build.active) {
+        const info = ui.get().build?.target;
+        const a = info?.actions[0];
+        if (a) this.triggerBuild(a);
+      } else if (this.mode === 'player') this.interact();
+    }
   }
 
   private holdElevatorIfInDoorway(): void {
@@ -240,7 +420,13 @@ export class Game {
     const f = this.player.floor;
     const el = this.world.state.elevator;
     const inDoor = Math.abs(p.x) < 1.9 && p.z > -1.0 && p.z < 0.6;
-    if (inDoor && el.target === null && Math.abs(el.pos - f) < 1e-6 && el.doorTicks > 0 && this.lastHoldTick !== this.world.state.tick) {
+    if (
+      inDoor &&
+      el.target === null &&
+      Math.abs(el.pos - f) < 1e-6 &&
+      el.doorTicks > 0 &&
+      this.lastHoldTick !== this.world.state.tick
+    ) {
       this.lastHoldTick = this.world.state.tick;
       this.command({ type: 'holdElevator', floor: f });
     }
@@ -248,7 +434,11 @@ export class Game {
 
   private updateTarget(): void {
     const solids = [this.bunker.root];
-    const inter = [...this.panels.interactables(), this.actors.car.getObjectByName('elevator-panel')!, ...this.survivorMeshes()];
+    const inter = [
+      ...this.panels.interactables(),
+      this.actors.car.getObjectByName('elevator-panel')!,
+      ...this.survivorMeshes(),
+    ];
     this.target = this.input.enabled ? this.interactor.pick(this.rig.camera, solids, inter) : null;
     this.interactor.showHighlight(
       this.target,
@@ -266,8 +456,10 @@ export class Game {
     if (!t) return null;
     if (t.kind === 'callButton') return this.panels.callButtons[t.floor] ?? null;
     if (t.kind === 'carPanel') return this.actors.car.getObjectByName('elevator-panel') ?? null;
-    if (t.kind === 'survivor') return this.survivorMeshes().find((o) => o.userData.survivorId === t.id) ?? null;
-    if (t.kind === 'unsealFloor') return this.panels.interactables().find((o) => o.userData.interact?.kind === 'unsealFloor') ?? null;
+    if (t.kind === 'survivor')
+      return this.survivorMeshes().find((o) => o.userData.survivorId === t.id)?.children[0] ?? null;
+    if (t.kind === 'unsealFloor')
+      return this.panels.interactables().find((o) => o.userData.interact?.kind === 'unsealFloor') ?? null;
     return null;
   }
 
@@ -308,7 +500,9 @@ export class Game {
           return ok.ok ? 'E: open sealed cell' : `Sealed: ${ok.reason}`;
         }
         if (r?.damaged) {
-          const cost = w.defs.balance.repairCostPerCell.map((c) => `${c.qty * r.slotIds.length} ${c.item}`).join(', ');
+          const cost = w.defs.balance.repairCostPerCell
+            .map((c) => `${c.qty * r.slotIds.length} ${c.item}`)
+            .join(', ');
           return `${w.defs.rooms[r.type]!.name} (damaged)\nE: repair (${cost})`;
         }
         if (r) return `${w.defs.rooms[r.type]!.name} T${r.tier}`;
@@ -346,8 +540,14 @@ export class Game {
 
   private updateOverviewCamera(intent: ReturnType<InputManager['intent']>, dt: number): void {
     const o = this.overview;
-    o.x = Math.max(-26, Math.min(26, o.x + intent.moveX * dt * 14));
-    o.floor = Math.max(0, Math.min(GENERATED_FLOORS - 1, o.floor - intent.moveZ * dt * 2.5));
+    const want = this.build.active ? o.distance * 0.16 : 0;
+    o.panelOffset += (want - o.panelOffset) * Math.min(1, dt * 8);
+    const k = o.distance / 900;
+    o.x = Math.max(-26, Math.min(26, o.x + intent.moveX * dt * 14 - intent.lookDX * k * 400));
+    o.floor = Math.max(
+      0,
+      Math.min(GENERATED_FLOORS - 1, o.floor - intent.moveZ * dt * 2.5 - intent.lookDY * k * 100),
+    );
     o.apply(this.rig.camera);
     this.bunker.setFocus(o.floor);
   }

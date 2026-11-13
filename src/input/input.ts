@@ -9,6 +9,8 @@ export interface Intent {
   jump: boolean;
   sprint: boolean;
   crouch: boolean;
+  /** Primary click this frame: while pointer-locked = screen centre; otherwise pointer position (NDC). */
+  click: { x: number; y: number } | null;
 }
 
 /**
@@ -28,6 +30,11 @@ export class InputManager {
   /** Blocks gameplay input (menus, text fields). */
   enabled = true;
   private virtualPressed = new Set<Action>();
+  /** When false (overview/menus), clicking does not capture the pointer; drag pans/looks instead. */
+  lockOnClick = true;
+  private click: { x: number; y: number } | null = null;
+  private downAt: { x: number; y: number; t: number; id: number } | null = null;
+  private moved = 0;
 
   constructor(
     private canvas: HTMLElement,
@@ -50,24 +57,39 @@ export class InputManager {
     });
     canvas.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'touch') return; // touch layer handles touch
-      if (this.pointerLockSupported && document.pointerLockElement !== canvas) {
+      if (this.locked) {
+        if (e.button === 0) this.click = { x: 0, y: 0 };
+        return;
+      }
+      if (this.lockOnClick && this.pointerLockSupported) {
         this.requestLock();
         return;
       }
-      if (!this.pointerLockSupported) {
-        this.dragging = true;
-        this.dragId = e.pointerId;
-      }
+      this.dragging = true;
+      this.dragId = e.pointerId;
+      this.downAt = { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId };
+      this.moved = 0;
     });
     addEventListener('pointermove', (e) => {
       if (this.dragging && e.pointerId === this.dragId) {
         this.lookX += e.movementX;
         this.lookY += e.movementY;
+        this.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
       }
     });
     addEventListener('pointerup', (e) => {
-      if (e.pointerId === this.dragId) this.dragging = false;
+      if (e.pointerId !== this.dragId) return;
+      this.dragging = false;
+      if (this.downAt && this.moved < 8 && performance.now() - this.downAt.t < 500)
+        this.clickAt(e.clientX, e.clientY);
+      this.downAt = null;
     });
+  }
+
+  /** Register a click/tap at client coordinates (also used by the touch layer). */
+  clickAt(clientX: number, clientY: number): void {
+    const r = this.canvas.getBoundingClientRect();
+    this.click = { x: ((clientX - r.left) / r.width) * 2 - 1, y: -((clientY - r.top) / r.height) * 2 + 1 };
   }
 
   get locked(): boolean {
@@ -126,12 +148,14 @@ export class InputManager {
       jump: on && (this.wasPressed('jump') || v.jump),
       sprint: on && (this.isDown('sprint') || v.sprint),
       crouch: on && (this.isDown('crouch') || v.crouch),
+      click: on ? this.click : null,
     };
   }
 
   endFrame(): void {
     this.pressed.clear();
     this.virtualPressed.clear();
+    this.click = null;
     this.lookX = 0;
     this.lookY = 0;
     this.virtual.lookX = 0;

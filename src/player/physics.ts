@@ -9,7 +9,12 @@ export const STAND_HALF = 0.55; // capsule half-height (segment); total height =
 export const CROUCH_HALF = 0.25; // total 1.1
 
 /** Car footprint (floor-local x/z) — matches ActorsView. */
-export const CAR = { x0: -(GEO.shaftWidth - 0.5) / 2, x1: (GEO.shaftWidth - 0.5) / 2, z0: 0, z1: 3.6 } as const;
+export const CAR = {
+  x0: -(GEO.shaftWidth - 0.5) / 2,
+  x1: (GEO.shaftWidth - 0.5) / 2,
+  z0: 0,
+  z1: 3.6,
+} as const;
 
 /**
  * Player-only physics. Static colliders are rebuilt per floor from the same boxes the greybox
@@ -41,7 +46,9 @@ export class PhysicsWorld {
       this.gates.push(g);
     }
     // Elevator car floor (kinematic).
-    this.carBody = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 0, 0));
+    this.carBody = this.world.createRigidBody(
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 0, 0),
+    );
     this.carCollider = this.world.createCollider(
       RAPIER.ColliderDesc.cuboid((CAR.x1 - CAR.x0) / 2, 0.1, (CAR.z1 - CAR.z0) / 2).setTranslation(
         0,
@@ -51,8 +58,13 @@ export class PhysicsWorld {
       this.carBody,
     );
     // Player.
-    this.playerBody = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 1, -2.5));
-    this.playerCollider = this.world.createCollider(RAPIER.ColliderDesc.capsule(STAND_HALF, PLAYER_RADIUS), this.playerBody);
+    this.playerBody = this.world.createRigidBody(
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 1, -2.5),
+    );
+    this.playerCollider = this.world.createCollider(
+      RAPIER.ColliderDesc.capsule(STAND_HALF, PLAYER_RADIUS),
+      this.playerBody,
+    );
     this.controller = this.world.createCharacterController(0.02);
     this.controller.setUp({ x: 0, y: 1, z: 0 });
     this.controller.enableAutostep(0.35, 0.25, false);
