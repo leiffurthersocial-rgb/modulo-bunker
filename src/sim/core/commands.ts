@@ -19,6 +19,8 @@ export type Command =
   | { type: 'setPriority'; roomId: number; priority: number }
   | { type: 'toggleRoom'; roomId: number; enabled: boolean }
   | { type: 'callElevator'; floor: number }
+  /** Keeps the car's doors open while someone stands in the doorway. */
+  | { type: 'holdElevator'; floor: number }
   | { type: 'debug.give'; items: ItemStack[] }
   | { type: 'debug.unlockSlot'; slotId: number }
   | { type: 'debug.setFlag'; flag: string; value: boolean };
@@ -257,6 +259,12 @@ function run(w: World, c: Command, apply: boolean): CommandResult {
     case 'callElevator': {
       if (!isFloorOpen(w, c.floor)) return fail('Floor is sealed');
       if (apply && !st.elevator.queue.includes(c.floor)) st.elevator.queue.push(c.floor);
+      return OK;
+    }
+    case 'holdElevator': {
+      const el = st.elevator;
+      if (el.target !== null || Math.abs(el.pos - c.floor) > 1e-6) return fail('Car not here');
+      if (apply) el.doorTicks = Math.max(el.doorTicks, 3);
       return OK;
     }
     case 'debug.give':

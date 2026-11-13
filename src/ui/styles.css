@@ -1,0 +1,221 @@
+:root {
+  --ui-bg: rgba(14, 16, 19, 0.86);
+  --ui-fg: #e6e8ea;
+  --ui-dim: #9aa3ab;
+  --ui-accent: #e0b73a;
+  --ui-danger: #e35d5d;
+  --ui-ok: #6fcf7f;
+  --ui-scale: 1;
+  --tap: 44px;
+}
+#ui-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  font: calc(14px * var(--ui-scale)) / 1.35 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--ui-fg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+#ui-root button {
+  font: inherit;
+  color: inherit;
+  background: #2a2f35;
+  border: 1px solid #444b53;
+  border-radius: 8px;
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 0 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#ui-root button:hover:not(:disabled) {
+  background: #353b42;
+}
+#ui-root button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.hud > * {
+  pointer-events: auto;
+}
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.6);
+  pointer-events: none !important;
+}
+.prompt {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 34px);
+  transform: translateX(-50%);
+  background: var(--ui-bg);
+  padding: 6px 12px;
+  border-radius: 8px;
+  white-space: pre-line;
+  text-align: center;
+  pointer-events: none !important;
+}
+.click-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  transform: translateX(-50%);
+  background: var(--ui-bg);
+  padding: 10px 16px;
+  border-radius: 10px;
+  color: var(--ui-dim);
+  cursor: pointer;
+}
+.notices {
+  position: absolute;
+  right: 12px;
+  top: 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  pointer-events: none !important;
+}
+.notice {
+  background: var(--ui-bg);
+  border-left: 4px solid var(--ui-dim);
+  padding: 6px 10px;
+  border-radius: 6px;
+  max-width: 340px;
+}
+.notice.warn {
+  border-color: var(--ui-accent);
+}
+.notice.danger {
+  border-color: var(--ui-danger);
+}
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel {
+  background: var(--ui-bg);
+  border: 1px solid #3a4148;
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.panel h3 {
+  margin: 0 0 10px;
+  font-size: 1.05em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ui-accent);
+}
+.floor-grid {
+  display: grid;
+  grid-template-columns: repeat(5, var(--tap));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.floor-grid button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 !important;
+  font-weight: 700;
+}
+.floor-grid button small {
+  font-size: 0.55em;
+  font-weight: 400;
+}
+.floor-grid button.current {
+  border-color: var(--ui-accent) !important;
+}
+.close {
+  width: 100%;
+}
+
+/* Touch controls */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+}
+#touch-controls .tc-look {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 60%;
+  height: 100%;
+  pointer-events: auto;
+  touch-action: none;
+}
+#touch-controls .tc-stick-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 40%;
+  height: 65%;
+  pointer-events: auto;
+  touch-action: none;
+}
+#touch-controls .tc-base {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  display: none;
+  pointer-events: none;
+}
+#touch-controls .tc-knob {
+  position: absolute;
+  left: 35px;
+  top: 35px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+}
+#touch-controls .tc-buttons {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(3, 64px);
+  gap: 10px;
+  pointer-events: auto;
+}
+#touch-controls .tc-buttons button {
+  height: 64px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(20, 24, 28, 0.6);
+  color: #eee;
+  font: 600 13px system-ui, sans-serif;
+  touch-action: manipulation;
+}
+#touch-controls .tc-buttons button.on {
+  background: rgba(224, 183, 58, 0.5);
+}
+#touch-controls .tc-buttons .tc-big {
+  font-size: 22px;
+}
+#touch-controls .tc-menu {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 52px;
+  height: 52px !important;
+}

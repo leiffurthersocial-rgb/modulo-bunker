@@ -9,6 +9,7 @@ import type { Room, Slot } from '../sim/core/state';
 import { cellInnerX, cellsXRange, floorY } from '../sim/core/geometry';
 import type { World } from '../sim';
 import { BoxBatch, disposeTree } from './greybox';
+import type { AABB } from './greybox';
 import { makeLabel } from './labels';
 import { roomInfo } from '../sim/systems/rooms';
 import { GENERATED_FLOORS } from '../gen/bunker';
@@ -57,6 +58,10 @@ export class BunkerView {
   /** Instanced ceiling bands, one instance per room/empty cell (all floors). */
   private bands: THREE.InstancedMesh;
   private bandSlots: number[] = [];
+  /** Solid boxes per floor (for physics). */
+  readonly colliders = new Map<number, AABB[]>();
+  /** Called after a floor is (re)built with its collider boxes. */
+  onFloorBuilt: ((floor: number, boxes: AABB[]) => void) | null = null;
   overlay: Overlay = 'none';
   showFront = true;
   focusFloor = 0;
@@ -100,6 +105,7 @@ export class BunkerView {
         disposeTree(fv.group);
       }
       this.floors.set(f, this.buildFloor(f, sig));
+      this.onFloorBuilt?.(f, this.colliders.get(f)!);
     }
     // Band instances: one per non-rock, non-sealed cell on open/sealed floors.
     this.bandSlots = st.slots
@@ -124,7 +130,7 @@ export class BunkerView {
 
   private signature(f: number): string {
     const st = this.world.state;
-    const parts: string[] = [st.floors[f]!.state];
+    const parts: string[] = [st.floors[f]!.state, st.floors[f + 1]?.state ?? ''];
     for (const s of st.slots) {
       if (s.floor !== f) continue;
       const r = this.world.room(s.roomId);
@@ -199,9 +205,11 @@ export class BunkerView {
     const st = this.world.state;
     const y0 = floorY(f);
     const H = GEO.cellHeight;
-    const opaque = new BoxBatch();
-    const translucent = new BoxBatch();
-    const front = new BoxBatch();
+    const sink: AABB[] = [];
+    this.colliders.set(f, sink);
+    const opaque = new BoxBatch(sink);
+    const translucent = new BoxBatch(sink);
+    const front = new BoxBatch(sink);
     const group = new THREE.Group();
     group.name = `floor-${f}`;
     const labels = new THREE.Group();

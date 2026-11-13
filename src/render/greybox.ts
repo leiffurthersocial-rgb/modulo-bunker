@@ -1,10 +1,24 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
-/** Accumulates axis-aligned boxes with per-box vertex colour, then merges into one geometry. */
+export interface AABB {
+  x0: number;
+  y0: number;
+  z0: number;
+  x1: number;
+  y1: number;
+  z1: number;
+}
+
+/**
+ * Accumulates axis-aligned boxes with per-box vertex colour, then merges into one geometry.
+ * Solid boxes are also recorded into `sink` (physics colliders come from the same layout code).
+ */
 export class BoxBatch {
   private parts: THREE.BufferGeometry[] = [];
   private tmpColor = new THREE.Color();
+
+  constructor(private sink?: AABB[]) {}
 
   /** Box from min/max corners. */
   add(
@@ -15,7 +29,17 @@ export class BoxBatch {
     y1: number,
     z1: number,
     color: THREE.ColorRepresentation,
+    solid = true,
   ): void {
+    if (solid && this.sink)
+      this.sink.push({
+        x0: Math.min(x0, x1),
+        y0: Math.min(y0, y1),
+        z0: Math.min(z0, z1),
+        x1: Math.max(x0, x1),
+        y1: Math.max(y0, y1),
+        z1: Math.max(z0, z1),
+      });
     const w = Math.abs(x1 - x0);
     const h = Math.abs(y1 - y0);
     const d = Math.abs(z1 - z0);
