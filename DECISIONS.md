@@ -35,3 +35,24 @@ Format: what, why, alternatives rejected. Newest at the bottom.
 
 - **What:** you declined to store a token, so deploys go through Vercel's GitHub integration (preferred) or your local CLI.
 - **Consequence:** "deploy hello world to Vercel" is **not done** from here; it needs one of the routes in SETUP.md §4.
+
+## D-007 Answers to the PLAN.md open questions (2026-11-13)
+
+- **Vercel:** you connect the repo through Vercel's GitHub integration yourself. No token in the cloud environment.
+- **Fallout Shelter / Frostpunk:** work from the brief (no further sourcing).
+- **UI:** Preact for stateful panels (tablet, build menu, settings, debug). The HUD is plain DOM. It must work equally on iPad and desktop: large touch targets (≥44 px), no hover-only affordances.
+- **Heat:** Phase 1 has per-module temperature with heaters and a leak to the rock, but no module-to-module conduction. The data fields exist, and conduction comes in Phase 2.
+- **iPad target:** the game will run on friends' various iPads, so we design for the weakest plausible device: a 2021-era base iPad (A13, 3 GB RAM, iPadOS 17/18, **no WebGPU, no Pointer Lock**). Budget for the greybox phases: JS heap under 150 MB, total page under 300 MB.
+- **Default seed:** `ember-07`.
+
+## D-008 Phase 1 resource model: global stores plus physical automation (2026-11-13)
+
+- **What:** bulk resources (water, food, ice, filters, scrap, parts) live in a bunker-wide **store**, Fallout Shelter style. Rooms produce into it and consume from it, limited by storage capacity. Machines and conveyors are a **physical** layer on top: items on lanes are real, and a machine's output port either feeds a lane or, if unconnected, delivers into the store. Power, heat and air are computed per tick and aren't stored items (batteries come later).
+- **Why:** keeps the greybox playable and readable from day one while automation adds depth (throughput and bonuses). Phase 2 adds chests with request/supply rules on the same model.
+- **Rejected:** fully physical logistics for everything (too much to build before the game is fun), and a store-only design (no automation depth).
+
+## D-009 Sim time (2026-11-13)
+
+- 1 tick = 0.1 real s at x1 = **6 game seconds**, so 1 game day = 14,400 ticks = 24 real minutes.
+- Speed = ticks per real second (x0.5 → 5, x1 → 10, x4 → 40, x10 → 100, x100 → 1,000), with a wall-clock budget per frame. If the sim falls behind, the HUD shows the effective speed.
+- Survivor AI decides every 5 ticks (2 Hz real at x1).

@@ -1,0 +1,33 @@
+[
+  { "id": "ice", "name": "Ice", "color": "#bfe6ff", "conveyable": true, "category": "raw" },
+  { "id": "raw_water", "name": "Raw water", "color": "#7fa7b8", "conveyable": false, "category": "water" },
+  { "id": "water", "name": "Water", "color": "#3fa9f5", "conveyable": false, "category": "water" },
+  {
+    "id": "produce",
+    "name": "Produce",
+    "color": "#7cc35a",
+    "conveyable": true,
+    "spoilPerDay": 0.04,
+    "category": "food"
+  },
+  {
+    "id": "meal",
+    "name": "Meal",
+    "color": "#e8a33d",
+    "conveyable": true,
+    "spoilPerDay": 0.08,
+    "category": "food"
+  },
+  { "id": "ration", "name": "Ration pack", "color": "#b98b52", "conveyable": true, "category": "food" },
+  { "id": "filter", "name": "Air filter", "color": "#d9d9d9", "conveyable": true, "category": "part" },
+  { "id": "scrap", "name": "Scrap", "color": "#8a8f94", "conveyable": true, "category": "material" },
+  { "id": "parts", "name": "Parts", "color": "#c9b458", "conveyable": true, "category": "material" },
+  { "id": "medkit", "name": "Medkit", "color": "#e35d5d", "conveyable": true, "category": "medical" },
+  {
+    "id": "research",
+    "name": "Research data",
+    "color": "#a77ce8",
+    "conveyable": false,
+    "category": "mystery"
+  }
+]

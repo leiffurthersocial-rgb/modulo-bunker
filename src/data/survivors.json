@@ -1,0 +1,178 @@
+{
+  "skills": [
+    {
+      "id": "farming",
+      "name": "Farming"
+    },
+    {
+      "id": "engineering",
+      "name": "Engineering"
+    },
+    {
+      "id": "medicine",
+      "name": "Medicine"
+    },
+    {
+      "id": "cooking",
+      "name": "Cooking"
+    },
+    {
+      "id": "research",
+      "name": "Research"
+    },
+    {
+      "id": "maintenance",
+      "name": "Maintenance"
+    }
+  ],
+  "needs": [
+    {
+      "id": "hunger",
+      "name": "Hunger",
+      "decayPerHour": 3.0,
+      "low": 40,
+      "critical": 15,
+      "healthDamagePerHour": 1.5
+    },
+    {
+      "id": "thirst",
+      "name": "Thirst",
+      "decayPerHour": 6,
+      "low": 40,
+      "critical": 15,
+      "healthDamagePerHour": 3
+    },
+    {
+      "id": "sleep",
+      "name": "Sleep",
+      "decayPerHour": 5.5,
+      "low": 35,
+      "critical": 12,
+      "healthDamagePerHour": 0.5
+    },
+    {
+      "id": "warmth",
+      "name": "Warmth",
+      "decayPerHour": 0,
+      "low": 45,
+      "critical": 20,
+      "healthDamagePerHour": 2
+    },
+    {
+      "id": "hygiene",
+      "name": "Hygiene",
+      "decayPerHour": 2,
+      "low": 30,
+      "critical": 10,
+      "healthDamagePerHour": 0
+    },
+    {
+      "id": "social",
+      "name": "Social",
+      "decayPerHour": 1.6,
+      "low": 30,
+      "critical": 10,
+      "healthDamagePerHour": 0
+    },
+    {
+      "id": "purpose",
+      "name": "Purpose",
+      "decayPerHour": 1.2,
+      "low": 30,
+      "critical": 10,
+      "healthDamagePerHour": 0
+    }
+  ],
+  "traits": [
+    {
+      "id": "anxious",
+      "name": "Anxious",
+      "description": "Breaks sooner under stress.",
+      "breakThreshold": 8,
+      "excludes": ["optimistic"]
+    },
+    {
+      "id": "optimistic",
+      "name": "Optimistic",
+      "description": "Shrugs things off.",
+      "breakThreshold": -8,
+      "excludes": ["anxious"]
+    },
+    {
+      "id": "stubborn",
+      "name": "Stubborn",
+      "description": "Hard to reassign, works longer.",
+      "needDecay": {
+        "purpose": 0.7
+      }
+    },
+    {
+      "id": "claustrophobic",
+      "name": "Claustrophobic",
+      "description": "Small, deep rooms wear on them.",
+      "needDecay": {
+        "social": 1.3
+      },
+      "breakThreshold": 5
+    },
+    {
+      "id": "night_owl",
+      "name": "Night owl",
+      "description": "Needs less sleep.",
+      "needDecay": {
+        "sleep": 0.8
+      }
+    },
+    {
+      "id": "iron_stomach",
+      "name": "Iron stomach",
+      "description": "Gets hungry slower.",
+      "needDecay": {
+        "hunger": 0.8
+      }
+    },
+    {
+      "id": "loner",
+      "name": "Loner",
+      "description": "Social need decays slowly.",
+      "needDecay": {
+        "social": 0.5
+      }
+    },
+    {
+      "id": "tinkerer",
+      "name": "Tinkerer",
+      "description": "Good with machines.",
+      "skillBonus": {
+        "engineering": 2,
+        "maintenance": 1
+      }
+    }
+  ],
+  "templates": [
+    {
+      "id": "s1",
+      "name": "Vale",
+      "color": "#e07a5f",
+      "aptitudes": ["engineering", "maintenance"]
+    },
+    {
+      "id": "s2",
+      "name": "Rook",
+      "color": "#81b29a",
+      "aptitudes": ["farming", "cooking"]
+    },
+    {
+      "id": "s3",
+      "name": "Wren",
+      "color": "#f2cc8f",
+      "aptitudes": ["medicine", "research"]
+    },
+    {
+      "id": "s4",
+      "name": "Sable",
+      "color": "#6d9dc5",
+      "aptitudes": ["cooking", "maintenance"]
+    }
+  ]
+}

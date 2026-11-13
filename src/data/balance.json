@@ -1,0 +1,70 @@
+{
+  "outsideTempStart": -14,
+  "outsideTempPerDay": -0.6,
+  "outsideTempMin": -45,
+  "cellLeakKwPerC": 0.08,
+  "cellHeatCapacity": 3000,
+  "comfortTemp": 18,
+  "co2PerPersonHour": 420,
+  "co2Ambient": 420,
+  "co2Bad": 2500,
+  "co2Lethal": 6000,
+  "baseCellDraw": 0.5,
+  "baseStorage": 200,
+  "demolishRefund": 0.5,
+  "startingStore": [
+    {
+      "item": "water",
+      "qty": 40
+    },
+    {
+      "item": "ration",
+      "qty": 30
+    },
+    {
+      "item": "produce",
+      "qty": 6
+    },
+    {
+      "item": "ice",
+      "qty": 10
+    },
+    {
+      "item": "filter",
+      "qty": 6
+    },
+    {
+      "item": "scrap",
+      "qty": 120
+    },
+    {
+      "item": "parts",
+      "qty": 20
+    },
+    {
+      "item": "medkit",
+      "qty": 3
+    }
+  ],
+  "repairCostPerCell": [
+    {
+      "item": "parts",
+      "qty": 3
+    },
+    {
+      "item": "scrap",
+      "qty": 6
+    }
+  ],
+  "openFloorCost": [
+    {
+      "item": "parts",
+      "qty": 12
+    },
+    {
+      "item": "scrap",
+      "qty": 25
+    }
+  ],
+  "powerSealSurplusKw": 8
+}

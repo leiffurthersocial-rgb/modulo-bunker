@@ -10,6 +10,11 @@ export default tseslint.config(
   prettier,
   { languageOptions: { globals: { ...globals.browser, ...globals.node } } },
   {
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+  {
     // sim/ and gen/ must stay pure: no Three.js, no DOM.
     files: ['src/sim/**/*.ts', 'src/gen/**/*.ts'],
     rules: {

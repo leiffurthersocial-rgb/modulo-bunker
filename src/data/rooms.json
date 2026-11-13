@@ -1,0 +1,1327 @@
+[
+  {
+    "id": "geothermal",
+    "name": "Geothermal generator",
+    "short": "GEO",
+    "color": "#e8553d",
+    "category": "power",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "engineering",
+    "priority": 1,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "Taps the deep heat. Produces power; staffing raises output.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 6
+          }
+        ],
+        "powerDraw": 0,
+        "wasteHeat": 3,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "power",
+            "kw": 52
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 40
+          },
+          {
+            "item": "parts",
+            "qty": 14
+          }
+        ],
+        "powerDraw": 0,
+        "wasteHeat": 4,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "power",
+            "kw": 75
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 60
+          },
+          {
+            "item": "parts",
+            "qty": 30
+          }
+        ],
+        "powerDraw": 0,
+        "wasteHeat": 5,
+        "workersPerCell": 2,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "power",
+            "kw": 105
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "boiler",
+    "name": "Boiler / heating plant",
+    "short": "HEAT",
+    "color": "#f08a24",
+    "category": "life",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "maintenance",
+    "priority": 1,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "Pushes heat into the bunker heating loop. Rooms below comfort draw from it.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 25
+          },
+          {
+            "item": "parts",
+            "qty": 4
+          }
+        ],
+        "powerDraw": 6,
+        "wasteHeat": 4,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "heatSupply",
+            "kw": 26
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 35
+          },
+          {
+            "item": "parts",
+            "qty": 10
+          }
+        ],
+        "powerDraw": 8,
+        "wasteHeat": 5,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "heatSupply",
+            "kw": 40
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 50
+          },
+          {
+            "item": "parts",
+            "qty": 22
+          }
+        ],
+        "powerDraw": 10,
+        "wasteHeat": 6,
+        "workersPerCell": 2,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "heatSupply",
+            "kw": 58
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "water_plant",
+    "name": "Ice-melt water plant",
+    "short": "H2O",
+    "color": "#3fa9f5",
+    "category": "life",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "maintenance",
+    "priority": 2,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "An intake bore pulls ice from the frozen shaft. Workers melt and purify by hand; machines do it faster.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 25
+          },
+          {
+            "item": "parts",
+            "qty": 4
+          }
+        ],
+        "powerDraw": 6,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 3,
+            "inputs": [],
+            "outputs": [
+              {
+                "item": "ice",
+                "qty": 1
+              }
+            ],
+            "unstaffed": 0.5
+          },
+          {
+            "type": "process",
+            "perHour": 1.2,
+            "inputs": [
+              {
+                "item": "ice",
+                "qty": 1
+              }
+            ],
+            "outputs": [
+              {
+                "item": "water",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 35
+          },
+          {
+            "item": "parts",
+            "qty": 10
+          }
+        ],
+        "powerDraw": 8,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 5,
+            "inputs": [],
+            "outputs": [
+              {
+                "item": "ice",
+                "qty": 1
+              }
+            ],
+            "unstaffed": 0.5
+          },
+          {
+            "type": "process",
+            "perHour": 2,
+            "inputs": [
+              {
+                "item": "ice",
+                "qty": 1
+              }
+            ],
+            "outputs": [
+              {
+                "item": "water",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 50
+          },
+          {
+            "item": "parts",
+            "qty": 22
+          }
+        ],
+        "powerDraw": 10,
+        "wasteHeat": 2,
+        "workersPerCell": 2,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 8,
+            "inputs": [],
+            "outputs": [
+              {
+                "item": "ice",
+                "qty": 1
+              }
+            ],
+            "unstaffed": 0.5
+          },
+          {
+            "type": "process",
+            "perHour": 3,
+            "inputs": [
+              {
+                "item": "ice",
+                "qty": 1
+              }
+            ],
+            "outputs": [
+              {
+                "item": "water",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "scrubber",
+    "name": "Air scrubber",
+    "short": "AIR",
+    "color": "#9ad6c8",
+    "category": "life",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "maintenance",
+    "priority": 1,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "Pulls CO2 out of the air. Uses filters.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 20
+          },
+          {
+            "item": "parts",
+            "qty": 5
+          }
+        ],
+        "powerDraw": 4,
+        "wasteHeat": 1,
+        "workersPerCell": 0,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "scrub",
+            "perHour": 2200,
+            "consumes": [
+              {
+                "item": "filter",
+                "qty": 0.04
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 12
+          }
+        ],
+        "powerDraw": 5,
+        "wasteHeat": 1,
+        "workersPerCell": 0,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "scrub",
+            "perHour": 3600,
+            "consumes": [
+              {
+                "item": "filter",
+                "qty": 0.05
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 45
+          },
+          {
+            "item": "parts",
+            "qty": 24
+          }
+        ],
+        "powerDraw": 6,
+        "wasteHeat": 2,
+        "workersPerCell": 0,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "scrub",
+            "perHour": 5400,
+            "consumes": [
+              {
+                "item": "filter",
+                "qty": 0.06
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "hydroponics",
+    "name": "Hydroponics farm",
+    "short": "FARM",
+    "color": "#7cc35a",
+    "category": "production",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "farming",
+    "priority": 3,
+    "mergeBonus": [1, 2.2, 3.6],
+    "description": "Grow lamps, water and warmth make produce. Cold slows growth.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 20
+          },
+          {
+            "item": "parts",
+            "qty": 4
+          }
+        ],
+        "powerDraw": 7,
+        "wasteHeat": 3,
+        "workersPerCell": 1,
+        "blocks": 3,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 0.5,
+            "inputs": [
+              {
+                "item": "water",
+                "qty": 0.6
+              }
+            ],
+            "outputs": [
+              {
+                "item": "produce",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 10
+          }
+        ],
+        "powerDraw": 9,
+        "wasteHeat": 4,
+        "workersPerCell": 1,
+        "blocks": 5,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 0.8,
+            "inputs": [
+              {
+                "item": "water",
+                "qty": 0.6
+              }
+            ],
+            "outputs": [
+              {
+                "item": "produce",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 45
+          },
+          {
+            "item": "parts",
+            "qty": 22
+          }
+        ],
+        "powerDraw": 11,
+        "wasteHeat": 5,
+        "workersPerCell": 2,
+        "blocks": 7,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 1.2,
+            "inputs": [
+              {
+                "item": "water",
+                "qty": 0.6
+              }
+            ],
+            "outputs": [
+              {
+                "item": "produce",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "kitchen",
+    "name": "Kitchen / diner",
+    "short": "FOOD",
+    "color": "#e8a33d",
+    "category": "production",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "cooking",
+    "priority": 3,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "Turns produce into meals. Survivors eat here.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 15
+          },
+          {
+            "item": "parts",
+            "qty": 3
+          }
+        ],
+        "powerDraw": 3,
+        "wasteHeat": 2,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 1.5,
+            "inputs": [
+              {
+                "item": "produce",
+                "qty": 1
+              }
+            ],
+            "outputs": [
+              {
+                "item": "meal",
+                "qty": 1
+              }
+            ]
+          },
+          {
+            "type": "dining",
+            "seats": 4
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 25
+          },
+          {
+            "item": "parts",
+            "qty": 8
+          }
+        ],
+        "powerDraw": 4,
+        "wasteHeat": 2,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 2.5,
+            "inputs": [
+              {
+                "item": "produce",
+                "qty": 1
+              }
+            ],
+            "outputs": [
+              {
+                "item": "meal",
+                "qty": 1.1
+              }
+            ]
+          },
+          {
+            "type": "dining",
+            "seats": 6
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 40
+          },
+          {
+            "item": "parts",
+            "qty": 18
+          }
+        ],
+        "powerDraw": 5,
+        "wasteHeat": 3,
+        "workersPerCell": 2,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 4,
+            "inputs": [
+              {
+                "item": "produce",
+                "qty": 1
+              }
+            ],
+            "outputs": [
+              {
+                "item": "meal",
+                "qty": 1.25
+              }
+            ]
+          },
+          {
+            "type": "dining",
+            "seats": 8
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "quarters",
+    "name": "Living quarters",
+    "short": "BEDS",
+    "color": "#b48fd6",
+    "category": "life",
+    "maxWidth": 3,
+    "buildable": true,
+    "priority": 2,
+    "mergeBonus": [1, 2, 3],
+    "description": "Beds. Survivors sleep here and recover stress.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 15
+          }
+        ],
+        "powerDraw": 1,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "beds",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 20
+          },
+          {
+            "item": "parts",
+            "qty": 4
+          }
+        ],
+        "powerDraw": 1,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 3,
+        "effects": [
+          {
+            "type": "beds",
+            "count": 3
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 10
+          }
+        ],
+        "powerDraw": 2,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "beds",
+            "count": 4
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "medbay",
+    "name": "Med bay",
+    "short": "MED",
+    "color": "#e35d5d",
+    "category": "life",
+    "maxWidth": 2,
+    "buildable": true,
+    "skill": "medicine",
+    "priority": 2,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "Treats injuries and illness.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 20
+          },
+          {
+            "item": "parts",
+            "qty": 6
+          }
+        ],
+        "powerDraw": 4,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "medical",
+            "perHour": 4
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 12
+          }
+        ],
+        "powerDraw": 5,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "medical",
+            "perHour": 7
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 45
+          },
+          {
+            "item": "parts",
+            "qty": 24
+          }
+        ],
+        "powerDraw": 6,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "medical",
+            "perHour": 11
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "workshop",
+    "name": "Workshop",
+    "short": "SHOP",
+    "color": "#c9b458",
+    "category": "production",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "engineering",
+    "priority": 3,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "Turns scrap into parts and filters.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 20
+          }
+        ],
+        "powerDraw": 5,
+        "wasteHeat": 2,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 1,
+            "inputs": [
+              {
+                "item": "scrap",
+                "qty": 3
+              }
+            ],
+            "outputs": [
+              {
+                "item": "parts",
+                "qty": 1
+              },
+              {
+                "item": "filter",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 8
+          }
+        ],
+        "powerDraw": 6,
+        "wasteHeat": 2,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 1.7,
+            "inputs": [
+              {
+                "item": "scrap",
+                "qty": 3
+              }
+            ],
+            "outputs": [
+              {
+                "item": "parts",
+                "qty": 1
+              },
+              {
+                "item": "filter",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 45
+          },
+          {
+            "item": "parts",
+            "qty": 18
+          }
+        ],
+        "powerDraw": 8,
+        "wasteHeat": 3,
+        "workersPerCell": 2,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 2.6,
+            "inputs": [
+              {
+                "item": "scrap",
+                "qty": 3
+              }
+            ],
+            "outputs": [
+              {
+                "item": "parts",
+                "qty": 1
+              },
+              {
+                "item": "filter",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "storage",
+    "name": "Storage",
+    "short": "STOR",
+    "color": "#8a8f94",
+    "category": "production",
+    "maxWidth": 3,
+    "buildable": true,
+    "priority": 4,
+    "mergeBonus": [1, 2.1, 3.3],
+    "description": "Raises the bunker store capacity.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 10
+          }
+        ],
+        "powerDraw": 0.5,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 3,
+        "effects": [
+          {
+            "type": "storage",
+            "capacity": 150
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 20
+          },
+          {
+            "item": "parts",
+            "qty": 3
+          }
+        ],
+        "powerDraw": 0.5,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 5,
+        "effects": [
+          {
+            "type": "storage",
+            "capacity": 260
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 8
+          }
+        ],
+        "powerDraw": 1,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 7,
+        "effects": [
+          {
+            "type": "storage",
+            "capacity": 400
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "radio",
+    "name": "Radio room",
+    "short": "RADIO",
+    "color": "#5db8b0",
+    "category": "special",
+    "maxWidth": 2,
+    "buildable": true,
+    "skill": "research",
+    "priority": 4,
+    "mergeBonus": [1, 2, 3],
+    "description": "Listens to the frozen world. Feeds the mystery log.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 20
+          },
+          {
+            "item": "parts",
+            "qty": 8
+          }
+        ],
+        "powerDraw": 3,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "signal",
+            "strength": 1
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 30
+          },
+          {
+            "item": "parts",
+            "qty": 16
+          }
+        ],
+        "powerDraw": 4,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "signal",
+            "strength": 2
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 45
+          },
+          {
+            "item": "parts",
+            "qty": 30
+          }
+        ],
+        "powerDraw": 5,
+        "wasteHeat": 1,
+        "workersPerCell": 1,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "signal",
+            "strength": 3
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "lab",
+    "name": "Lab",
+    "short": "LAB",
+    "color": "#a77ce8",
+    "category": "special",
+    "maxWidth": 3,
+    "buildable": true,
+    "skill": "research",
+    "priority": 4,
+    "mergeBonus": [1, 2.15, 3.4],
+    "description": "Produces research data for unlocks.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 25
+          },
+          {
+            "item": "parts",
+            "qty": 10
+          }
+        ],
+        "powerDraw": 6,
+        "wasteHeat": 2,
+        "workersPerCell": 1,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 0.5,
+            "inputs": [],
+            "outputs": [
+              {
+                "item": "research",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 35
+          },
+          {
+            "item": "parts",
+            "qty": 18
+          }
+        ],
+        "powerDraw": 7,
+        "wasteHeat": 2,
+        "workersPerCell": 1,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 0.8,
+            "inputs": [],
+            "outputs": [
+              {
+                "item": "research",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 50
+          },
+          {
+            "item": "parts",
+            "qty": 32
+          }
+        ],
+        "powerDraw": 9,
+        "wasteHeat": 3,
+        "workersPerCell": 2,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "process",
+            "perHour": 1.2,
+            "inputs": [],
+            "outputs": [
+              {
+                "item": "research",
+                "qty": 1
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "airlock",
+    "name": "Airlock / delivery hatch",
+    "short": "HATCH",
+    "color": "#6b7480",
+    "category": "special",
+    "maxWidth": 1,
+    "buildable": false,
+    "priority": 4,
+    "mergeBonus": [1, 1, 1],
+    "description": "Sealed from the outside. Sometimes, something arrives.",
+    "tiers": [
+      {
+        "cost": [],
+        "powerDraw": 2,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 1,
+        "effects": []
+      },
+      {
+        "cost": [
+          {
+            "item": "parts",
+            "qty": 20
+          }
+        ],
+        "powerDraw": 2,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 2,
+        "effects": []
+      },
+      {
+        "cost": [
+          {
+            "item": "parts",
+            "qty": 40
+          }
+        ],
+        "powerDraw": 3,
+        "wasteHeat": 0,
+        "workersPerCell": 0,
+        "blocks": 3,
+        "effects": []
+      }
+    ]
+  },
+  {
+    "id": "common",
+    "name": "Common room",
+    "short": "COMMON",
+    "color": "#e3c35d",
+    "category": "social",
+    "maxWidth": 3,
+    "buildable": true,
+    "priority": 4,
+    "mergeBonus": [1, 2.1, 3.3],
+    "description": "Cards, a dartboard, a broken projector. Restores social and purpose.",
+    "tiers": [
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 15
+          }
+        ],
+        "powerDraw": 2,
+        "wasteHeat": 1,
+        "workersPerCell": 0,
+        "blocks": 2,
+        "effects": [
+          {
+            "type": "recreation",
+            "perHour": 12
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 25
+          },
+          {
+            "item": "parts",
+            "qty": 6
+          }
+        ],
+        "powerDraw": 3,
+        "wasteHeat": 1,
+        "workersPerCell": 0,
+        "blocks": 4,
+        "effects": [
+          {
+            "type": "recreation",
+            "perHour": 18
+          }
+        ]
+      },
+      {
+        "cost": [
+          {
+            "item": "scrap",
+            "qty": 35
+          },
+          {
+            "item": "parts",
+            "qty": 14
+          }
+        ],
+        "powerDraw": 4,
+        "wasteHeat": 1,
+        "workersPerCell": 0,
+        "blocks": 6,
+        "effects": [
+          {
+            "type": "recreation",
+            "perHour": 26
+          }
+        ]
+      }
+    ]
+  }
+]
