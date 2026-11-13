@@ -27,6 +27,7 @@ import { checkCommand } from '../sim';
 import { BuildMode } from './buildMode';
 import type { BuildAction } from './buildMode';
 import { Metrics, foodTotal } from './metrics';
+import { buildTabletView } from './tabletView';
 import { formatClock } from '../sim';
 import { storeCapacity, storeUsed } from '../sim/core/store';
 import type { Speed as SpeedT } from '../sim';
@@ -149,7 +150,16 @@ export class Game {
         bar: {
           setSpeed: (sp: number) => this.runner.setSpeed(sp as SpeedT),
           cycleOverlay: () => this.cycleOverlay(),
-          openTablet: () => pushNotice('Tablet arrives in M1.6'),
+          openTablet: () => this.setTablet(true),
+        },
+        tablet: {
+          assign: (survivorId: number, roomId: number | null) =>
+            this.command({ type: 'assign', survivorId, roomId }),
+          setPriority: (roomId: number, priority: number) =>
+            this.command({ type: 'setPriority', roomId, priority }),
+          toggleRoom: (roomId: number, enabled: boolean) =>
+            this.command({ type: 'toggleRoom', roomId, enabled }),
+          close: () => this.setTablet(false),
         },
         debug: {
           run: (cmd: string) => this.console(cmd),
@@ -263,6 +273,20 @@ export class Game {
     }
   }
 
+  tabletOpen = false;
+  setTablet(on: boolean): void {
+    this.tabletOpen = on;
+    this.input.enabled = !on;
+    if (on) {
+      this.releasingLock = this.input.locked;
+      this.input.releaseLock();
+      ui.set({ tablet: buildTabletView(this.world), prompt: null });
+    } else {
+      ui.set({ tablet: null });
+      if (this.mode === 'player') this.input.requestLock();
+    }
+  }
+
   cycleOverlay(): void {
     const order = ['none', 'power', 'heat'] as const;
     this.bunker.overlay = order[(order.indexOf(this.bunker.overlay) + 1) % order.length]!;
@@ -304,6 +328,7 @@ export class Game {
         overlay: this.bunker.overlay,
       },
     });
+    if (this.tabletOpen) ui.set({ tablet: buildTabletView(this.world) });
     if (this.debugOpen) {
       const info = this.rig.renderer.info;
       const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
@@ -515,6 +540,10 @@ export class Game {
       if (i.codePressed('KeyP') || i.codePressed('Escape')) this.closePause();
       return;
     }
+    if (this.tabletOpen && i.codePressed('Escape')) {
+      this.setTablet(false);
+      return;
+    }
     if (i.wasPressed('pause')) {
       this.openPause();
       return;
@@ -538,6 +567,11 @@ export class Game {
     if (i.wasPressed('debug')) {
       this.debugOpen = !this.debugOpen;
       if (!this.debugOpen) ui.set({ debug: null });
+    }
+    if (i.wasPressed('tablet')) this.setTablet(!this.tabletOpen);
+    if (this.tabletOpen) {
+      if (i.codePressed('Escape')) this.setTablet(false);
+      return;
     }
     if (i.wasPressed('build')) this.setBuild(!this.build.active);
     if (i.wasPressed('interact') || (this.build.active && this.mode === 'player' && this.lastClick)) {
@@ -668,6 +702,7 @@ export class Game {
         break;
       }
       case 'survivor':
+        this.setTablet(true);
         break;
     }
   }

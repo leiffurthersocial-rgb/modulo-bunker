@@ -29,3 +29,25 @@ test('build a room from the overview build panel', async ({ page }) => {
   expect(type).toBe('common');
   await expect(page.getByTestId('build-panel')).toContainText('Common room T1');
 });
+
+test('assign a survivor to a room through the tablet', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto('/?seed=ember-07&view=overview');
+  await page.waitForFunction(() => (window as any).__game !== undefined);
+  const { name, kitchenId } = await page.evaluate(() => {
+    const G = (window as any).__game;
+    G.setTablet(true);
+    return {
+      name: G.world.state.survivors[0].name,
+      kitchenId: G.world.state.rooms.find((r: any) => r.type === 'kitchen').id,
+    };
+  });
+  const tablet = page.getByTestId('tablet');
+  await expect(tablet).toBeVisible();
+  await tablet.getByLabel(`Assign ${name}`).selectOption(String(kitchenId));
+  await page.waitForFunction(
+    (id) => (window as any).__game.world.state.survivors[0].assignedRoom === id,
+    kitchenId,
+    { timeout: 10_000 },
+  );
+});

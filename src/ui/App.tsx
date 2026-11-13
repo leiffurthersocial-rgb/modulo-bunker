@@ -9,6 +9,8 @@ import { ResourceBar } from './ResourceBar';
 import { DebugPanel } from './DebugPanel';
 import type { Sample } from '../app/metrics';
 import type { Settings } from '../input/settings';
+import { Tablet } from './Tablet';
+import type { TabletActions } from './tabletTypes';
 
 export interface BuildUiActions {
   select(id: string): void;
@@ -24,9 +26,11 @@ export function App(props: {
   getSettings: () => Settings;
   bar: { setSpeed(s: number): void; cycleOverlay(): void; openTablet(): void };
   debug: { run(cmd: string): string; samples(): Sample[] };
+  tablet: TabletActions;
 }) {
   const paused = useStore(ui, (s) => s.paused);
   const build = useStore(ui, (s) => s.build);
+  const tablet = useStore(ui, (s) => s.tablet);
   const overlay = useStore(ui, (s) => s.resources?.overlay ?? 'none');
   return (
     <>
@@ -91,6 +95,7 @@ export function App(props: {
           onClose={props.build.close}
         />
       )}
+      {tablet && !paused && <Tablet view={tablet} actions={props.tablet} />}
       {paused && <PauseMenu seed={props.seed} settings={props.getSettings()} actions={props.pause} />}
     </>
   );

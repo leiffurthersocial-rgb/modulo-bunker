@@ -1,6 +1,7 @@
 import type { BuildOption, BuildTargetInfo } from '../app/buildMode';
 import type { ResourceView } from './ResourceBar';
 import type { DebugStats } from './DebugPanel';
+import type { TabletView } from './tabletTypes';
 import { useEffect, useState } from 'preact/hooks';
 
 /** Minimal observable store for UI state (no framework lock-in, testable). */
@@ -46,7 +47,7 @@ export interface UiState {
   build: { options: BuildOption[]; selected: string; target: BuildTargetInfo | null } | null;
   resources: ResourceView | null;
   debug: DebugStats | null;
-  tablet: boolean;
+  tablet: TabletView | null;
 }
 
 export const ui = new Store<UiState>({
@@ -61,7 +62,7 @@ export const ui = new Store<UiState>({
   build: null,
   resources: null,
   debug: null,
-  tablet: false,
+  tablet: null,
 });
 
 let noticeId = 1;
