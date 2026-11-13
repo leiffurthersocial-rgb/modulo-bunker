@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Modulo: Bunker</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        overflow: hidden;
+        color: #ddd;
+        font-family: system-ui, sans-serif;
+      }
+      canvas {
+        display: block;
+        touch-action: none;
+      }
+      #hud {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        font:
+          12px/1.4 ui-monospace,
+          monospace;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

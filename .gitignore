@@ -1,0 +1,11 @@
+node_modules
+dist
+test-results
+playwright-report
+.asset-cache
+.vercel
+.env*
+!.env.example
+screenshots/tmp
+# Friend photos are PRIVATE: never commit
+characters/inbox/
