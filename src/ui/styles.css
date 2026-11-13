@@ -376,3 +376,124 @@ kbd {
     width: calc(100vw - 260px);
   }
 }
+
+/* Resource bar */
+.resbar {
+  position: absolute;
+  left: 8px;
+  right: 76px;
+  top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  pointer-events: auto;
+}
+.resbar .res,
+.resbar .clock {
+  background: var(--ui-bg);
+  border-radius: 8px;
+  padding: 5px 9px;
+  border-bottom: 3px solid transparent;
+  white-space: nowrap;
+}
+.resbar .res.ok {
+  border-color: var(--ui-ok);
+}
+.resbar .res.warn {
+  border-color: var(--ui-accent);
+}
+.resbar .res.bad {
+  border-color: var(--ui-danger);
+  animation: pulse 1.2s infinite;
+}
+@keyframes pulse {
+  50% {
+    background: rgba(90, 20, 20, 0.9);
+  }
+}
+.resbar .spacer {
+  flex: 1;
+}
+.resbar .speeds {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+.resbar .speeds button,
+.resbar > button {
+  min-height: 34px !important;
+  min-width: 40px !important;
+  padding: 0 8px !important;
+}
+.resbar .speeds button.on {
+  border-color: var(--ui-accent) !important;
+  background: #3a3424 !important;
+}
+.tag {
+  margin-left: 6px;
+  font-size: 0.78em;
+  background: #5a1d1d;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.trend {
+  font-size: 0.78em;
+  color: var(--ui-dim);
+}
+.trend.up {
+  color: var(--ui-ok);
+}
+.trend.down {
+  color: var(--ui-danger);
+}
+.legend {
+  position: absolute;
+  left: 8px;
+  top: 58px;
+  background: var(--ui-bg);
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: flex;
+  gap: 10px;
+  font-size: 0.85em;
+}
+.legend i {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+
+/* Debug */
+.debug {
+  position: absolute;
+  left: 8px;
+  top: 100px;
+  width: 316px;
+  font:
+    12px/1.35 ui-monospace,
+    Menlo,
+    monospace;
+  pointer-events: auto;
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+}
+.graphs {
+  width: 300px;
+  display: block;
+  margin: 6px 0;
+}
+.console input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 32px !important;
+  font: inherit !important;
+}
+@media (max-width: 1250px) {
+  .resbar .res .dim {
+    display: none;
+  }
+}

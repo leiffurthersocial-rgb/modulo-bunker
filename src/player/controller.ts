@@ -43,6 +43,8 @@ export class FirstPersonController {
   /** Head-bob phase (render only). */
   private bob = 0;
   bobEnabled = true;
+  /** Debug free camera: fly through walls. */
+  noclip = false;
 
   constructor(private phys: PhysicsWorld) {}
 
@@ -78,6 +80,23 @@ export class FirstPersonController {
     const wantCrouch = intent.crouch;
     if (wantCrouch !== this.phys.crouched) this.phys.setCrouched(wantCrouch);
 
+    if (this.noclip) {
+      const p0 = this.position;
+      const sp = (intent.sprint ? 14 : 6) * dt;
+      const cp = Math.cos(this.pitch);
+      const fx0 = -Math.sin(this.yaw) * cp;
+      const fy0 = Math.sin(this.pitch);
+      const fz0 = -Math.cos(this.yaw) * cp;
+      this.phys.playerBody.setTranslation(
+        {
+          x: p0.x + (fx0 * intent.moveZ + Math.cos(this.yaw) * intent.moveX) * sp,
+          y: p0.y + fy0 * intent.moveZ * sp + (intent.jump ? 1 : 0),
+          z: p0.z + (fz0 * intent.moveZ - Math.sin(this.yaw) * intent.moveX) * sp,
+        },
+        true,
+      );
+      return;
+    }
     const p = this.position;
     const inLadder = p.x > LADDER.x0 && p.x < LADDER.x1 && p.z > LADDER.z0 && p.z < LADDER.z1;
     const ladderBottom = floorY(this.lowestOpenFloor);

@@ -112,20 +112,33 @@ export class BunkerView {
       .filter((s) => s.floor < GENERATED_FLOORS && (s.state === 'room' || s.state === 'empty'))
       .map((s) => s.id);
     this.bands.count = this.bandSlots.length;
-    this.bandSlots.forEach((id, i) => {
-      const s = this.world.slot(id)!;
-      const cx = (cellInnerX(s.side, s.index) + cellInnerX(s.side, s.index + 1)) / 2;
-      this.tmpM.makeTranslation(cx, floorY(s.floor) + GEO.cellHeight - 0.1, 0);
-      this.bands.setMatrixAt(i, this.tmpM);
-    });
-    this.bands.instanceMatrix.needsUpdate = true;
+    this.layoutBands();
     this.updateColors();
     this.applyVisibility();
   }
 
-  /** Per-frame cheap updates: overlay colours and label texts for visible floors. */
+  private bandOverlay: Overlay | null = null;
+
+  /** Per-frame cheap updates: overlay colours (and band shape when the overlay changes). */
   update(): void {
+    if (this.bandOverlay !== this.overlay) this.layoutBands();
     this.updateColors();
+  }
+
+  /** Thin ceiling band normally; full-height translucent block per cell while an overlay is on. */
+  private layoutBands(): void {
+    this.bandOverlay = this.overlay;
+    const full = this.overlay !== 'none';
+    const h = full ? GEO.cellHeight - 0.1 : 0.12;
+    this.mats.band.opacity = full ? 0.38 : 0.55;
+    this.bandSlots.forEach((id, i) => {
+      const s = this.world.slot(id)!;
+      const cx = (cellInnerX(s.side, s.index) + cellInnerX(s.side, s.index + 1)) / 2;
+      const y = floorY(s.floor) + (full ? GEO.cellHeight / 2 : GEO.cellHeight - 0.1);
+      this.tmpM.makeScale(1, h / 0.12, 1).setPosition(cx, y, 0);
+      this.bands.setMatrixAt(i, this.tmpM);
+    });
+    this.bands.instanceMatrix.needsUpdate = true;
   }
 
   private signature(f: number): string {

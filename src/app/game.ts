@@ -26,6 +26,10 @@ import { GENERATED_FLOORS } from '../gen/bunker';
 import { checkCommand } from '../sim';
 import { BuildMode } from './buildMode';
 import type { BuildAction } from './buildMode';
+import { Metrics, foodTotal } from './metrics';
+import { formatClock } from '../sim';
+import { storeCapacity, storeUsed } from '../sim/core/store';
+import type { Speed as SpeedT } from '../sim';
 
 export const DEFAULT_SEED = 'ember-07';
 export type CameraMode = 'overview' | 'player';
@@ -48,6 +52,12 @@ export class Game {
   /** Cell selected by click/tap in overview mode. */
   selectedSlot: number | null = null;
   private lastBuildJson = '';
+  readonly metrics: Metrics;
+  private uiAcc = 0;
+  private fpsFrames = 0;
+  private fpsAcc = 0;
+  private fps = 0;
+  debugOpen = false;
   mode: CameraMode = 'player';
   frameMs = 0;
   private last = performance.now();
@@ -75,6 +85,7 @@ export class Game {
     }
     this.world = newWorld(seed, defs);
     this.runner = new SimRunner(this.world);
+    this.metrics = new Metrics(this.world);
     this.rig = new SceneRig(container);
     this.bunker = new BunkerView(this.world);
     this.bunker.onFloorBuilt = (f, boxes) => this.phys.setFloorBoxes(f, boxes);
@@ -135,6 +146,15 @@ export class Game {
       h(App, {
         seed: this.seed,
         getSettings: () => this.input.settings,
+        bar: {
+          setSpeed: (sp: number) => this.runner.setSpeed(sp as SpeedT),
+          cycleOverlay: () => this.cycleOverlay(),
+          openTablet: () => pushNotice('Tablet arrives in M1.6'),
+        },
+        debug: {
+          run: (cmd: string) => this.console(cmd),
+          samples: () => this.metrics.samples,
+        },
         build: {
           select: (id: string) => {
             this.build.selected = id;
@@ -240,6 +260,118 @@ export class Game {
       this.overview.floor = Math.max(0.5, this.player.floor);
       this.interactor.highlight.visible = false;
       ui.set({ prompt: null });
+    }
+  }
+
+  cycleOverlay(): void {
+    const order = ['none', 'power', 'heat'] as const;
+    this.bunker.overlay = order[(order.indexOf(this.bunker.overlay) + 1) % order.length]!;
+    this.uiAcc = 1;
+  }
+
+  /** Pushes resource + debug views to the UI (4 Hz). */
+  private updateUi(dt: number): void {
+    this.fpsFrames++;
+    this.fpsAcc += dt;
+    if (this.fpsAcc >= 0.5) {
+      this.fps = this.fpsFrames / this.fpsAcc;
+      this.fpsFrames = 0;
+      this.fpsAcc = 0;
+    }
+    this.uiAcc += dt;
+    if (this.uiAcc < 0.25) return;
+    this.uiAcc = 0;
+    const st = this.world.state;
+    const temps = st.rooms.filter((r) => !r.damaged).map((r) => r.temp);
+    ui.set({
+      resources: {
+        clock: formatClock(st.tick),
+        speed: this.runner.speed,
+        effective: this.runner.effectiveSpeed * 1,
+        power: { produced: st.power.produced, demand: st.power.demand, shed: st.power.shedFrom },
+        heat: {
+          min: temps.length ? Math.min(...temps) : st.outsideTemp,
+          avg: temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : st.outsideTemp,
+          outside: st.outsideTemp,
+        },
+        co2: st.co2,
+        co2Bad: this.world.defs.balance.co2Bad,
+        water: st.store.water ?? 0,
+        waterTrend: this.metrics.trend('water'),
+        food: foodTotal(this.world),
+        foodTrend: this.metrics.trend('food'),
+        store: { used: storeUsed(this.world), cap: storeCapacity(this.world) },
+        overlay: this.bunker.overlay,
+      },
+    });
+    if (this.debugOpen) {
+      const info = this.rig.renderer.info;
+      const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+      ui.set({
+        debug: {
+          fps: this.fps,
+          frameMs: this.frameMs,
+          drawCalls: info.render.calls,
+          triangles: info.render.triangles,
+          geometries: info.memory.geometries,
+          textures: info.memory.textures,
+          simMsPerTick: this.runner.lastTickMs,
+          tick: st.tick,
+          entities: `rooms ${st.rooms.length} · survivors ${st.survivors.length} · machines ${st.machines.length} · lanes ${st.lanes.length}`,
+          heapMb: mem ? mem.usedJSHeapSize / 1048576 : null,
+        },
+      });
+    }
+  }
+
+  /** Debug console. */
+  console(line: string): string {
+    const [cmd, ...args] = line.split(/\s+/);
+    const st = this.world.state;
+    switch (cmd) {
+      case 'help':
+        return 'speed <0|0.5|1|4|10|100> · give <item> <qty> · unlock [all|slotId] · tp <floor> · noclip · overlay · survivors · seed';
+      case 'speed':
+        this.runner.setSpeed(Number(args[0]) as SpeedT);
+        return `speed x${args[0]}`;
+      case 'give': {
+        const item = args[0] ?? 'scrap';
+        if (!this.world.defs.items[item]) return `unknown item ${item}`;
+        this.command({ type: 'debug.give', items: [{ item, qty: Number(args[1] ?? 50) }] });
+        return `gave ${args[1] ?? 50} ${item}`;
+      }
+      case 'unlock': {
+        const ids =
+          args[0] && args[0] !== 'all'
+            ? [Number(args[0])]
+            : st.slots
+                .filter((s) => s.state === 'sealed' && s.floor < 10 && s.seal?.hiddenRoom !== 'airlock')
+                .map((s) => s.id);
+        for (const id of ids) this.command({ type: 'debug.unlockSlot', slotId: id });
+        return `unlocked ${ids.length} slot(s)`;
+      }
+      case 'tp': {
+        const f = Number(args[0] ?? 0);
+        this.player.teleport(0.6, floorY(f), -2.6, this.player.yaw);
+        return `teleported to floor ${f + 1}`;
+      }
+      case 'noclip':
+        this.player.noclip = !this.player.noclip;
+        return `noclip ${this.player.noclip ? 'on' : 'off'}`;
+      case 'overlay':
+        this.cycleOverlay();
+        return `overlay ${this.bunker.overlay}`;
+      case 'survivors':
+        return st.survivors
+          .map(
+            (s) =>
+              `${s.name}: ${s.action} hp${s.health.toFixed(0)} hunger${s.needs.hunger!.toFixed(0)} thirst${s.needs.thirst!.toFixed(0)}`,
+          )
+          .join(' | ');
+      case 'seed':
+        return this.seed;
+      default:
+        return `unknown command: ${cmd}`;
     }
   }
 
@@ -363,6 +495,8 @@ export class Game {
       );
     }
     this.updateBuild();
+    this.metrics.update();
+    this.updateUi(dt);
     for (const fn of this.frameHooks) fn(dt);
     this.input.endFrame();
     this.rig.render();
@@ -400,10 +534,10 @@ export class Game {
     if (i.wasPressed('overview')) this.setMode(this.mode === 'player' ? 'overview' : 'player');
     if (i.wasPressed('speedUp')) this.runner.cycleSpeed(1);
     if (i.wasPressed('speedDown')) this.runner.cycleSpeed(-1);
-    if (i.wasPressed('overlay')) {
-      const order = ['none', 'power', 'heat'] as const;
-      this.bunker.overlay = order[(order.indexOf(this.bunker.overlay) + 1) % order.length]!;
-      pushNotice(`Overlay: ${this.bunker.overlay}`);
+    if (i.wasPressed('overlay')) this.cycleOverlay();
+    if (i.wasPressed('debug')) {
+      this.debugOpen = !this.debugOpen;
+      if (!this.debugOpen) ui.set({ debug: null });
     }
     if (i.wasPressed('build')) this.setBuild(!this.build.active);
     if (i.wasPressed('interact') || (this.build.active && this.mode === 'player' && this.lastClick)) {
