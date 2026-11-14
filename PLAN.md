@@ -92,7 +92,7 @@ Hard rules (ESLint already enforces part of this):
 - Needs decay: hunger, thirst, sleep, warmth, plus stubs for the rest.
 - Assignment to rooms through the tablet. Simple utility choice (work / eat / drink / sleep / warm up).
 - Pathfinding over the module graph (corridors, shaft, elevator queue, ladder).
-- Skills and traits are rolled from the seed. Full utility AI, moods and relationships come in Phase 2.
+- Skills and traits are rolled from the seed. Full utility AI, moods and relationships come in Phase 2
 - Accept: AI sanity tests (a starving survivor eats rather than works). Survivors reach every floor via the elevator.
 
 **M1.7 Machines and logistics (first slice)**
